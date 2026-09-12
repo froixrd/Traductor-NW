@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>TraductorNWN</AssemblyName>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+
+    <!-- Publicación portable: un solo .exe, sin necesitar .NET instalado -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Controles modernos para WinForms (bordes redondeados reales, temas oscuros
+         listos, TabControl que no depende del theming nativo de Windows). -->
+    <PackageReference Include="Guna.UI2.WinForms" Version="2.0.4.6" />
+    <!-- Iconos vectoriales (Font Awesome) para botones, sin necesitar imágenes .png/.ico sueltas. -->
+    <PackageReference Include="FontAwesome.Sharp" Version="6.6.0" />
+  </ItemGroup>
+
+</Project>
