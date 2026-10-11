@@ -9,9 +9,13 @@ Neverwinter Nights: Enhanced Edition.
   redirigida a OneDrive) y traduce los mensajes nuevos de inglés a español.
 - Tres pestañas: **Ambos** (traducción y debajo el original), **Inglés** (al
   instante, sin esperar a la traducción) y **Español**. `Ctrl+1/2/3` cambia de pestaña.
-- Escribes en español, pulsas Enter (o el botón de enviar) y se traduce al inglés
-  y se escribe en el chat del juego. Tus mensajes aparecen a la derecha, marcados
-  como enviados o no enviados.
+- Escribes en español, pulsas Enter (o el botón de enviar) y se traduce al inglés,
+  se escribe en el chat del juego y se envía solo. Tus mensajes aparecen a la
+  derecha: "✓ enviado" cuando el juego lo confirma en su log, "sin confirmar" si
+  no aparece (entonces pulsa Enter en el juego) o "no enviado" si falló.
+- El envío simula el teclado con códigos de tecla reales (no `SendKeys`), así el
+  juego reconoce el Enter. El texto viaja como caracteres Unicode: llega bien con
+  cualquier distribución de teclado (ñ, tildes, ¿ ¡) y nunca dispara atajos del juego.
 - Traduce con Google Translate o con DeepL (tiene plan gratuito).
 
 ## La interfaz

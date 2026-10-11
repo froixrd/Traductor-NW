@@ -48,6 +48,55 @@ namespace TraductorNWN
 
         internal const int SW_RESTORE = 9;
 
+        // ---------- Teclado simulado ----------
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+        [DllImport("user32.dll")]
+        internal static extern short GetAsyncKeyState(int vKey);
+
+        internal const uint INPUT_KEYBOARD = 1;
+        internal const uint KEYEVENTF_KEYUP = 0x0002;
+        internal const uint KEYEVENTF_UNICODE = 0x0004;
+        internal const uint KEYEVENTF_SCANCODE = 0x0008;
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct INPUT
+        {
+            public uint type;
+            public InputUnion U;
+        }
+
+        // La unión incluye MOUSEINPUT (el miembro más grande) para que INPUT tenga el tamaño
+        // que espera Windows; si no, SendInput rechaza la llamada.
+        [StructLayout(LayoutKind.Explicit)]
+        internal struct InputUnion
+        {
+            [FieldOffset(0)] public MOUSEINPUT mi;
+            [FieldOffset(0)] public KEYBDINPUT ki;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct KEYBDINPUT
+        {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
         // ---------- RichTextBox: repintado y scroll ----------
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);

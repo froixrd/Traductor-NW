@@ -34,6 +34,9 @@ namespace TraductorNWN
         // Mensajes enviados hace poco: su eco en el log no se repite en la pestaña Ambos.
         private readonly List<(string Text, long At)> _recentSent = new();
 
+        // Mensajes enviados que esperan aparecer en el log del juego (confirmación de que salieron).
+        private readonly List<(string Key, TaskCompletionSource<bool> Seen)> _awaitingEcho = new();
+
         private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 60 };
         private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 700 };
 
@@ -798,6 +801,7 @@ namespace TraductorNWN
                 if (line.Time == null) line = line with { Time = DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) };
 
                 bool translate = line.Kind == LineKind.Chat || !_filtrarSistema;
+                if (line.Kind == LineKind.Chat) SignalEcho(line.Text);
 
                 // La pestaña Inglés no espera a nadie: se pinta al instante.
                 var b = new MessageBuilder();
@@ -934,13 +938,33 @@ namespace TraductorNWN
 
                     await Task.Delay(_settings.RetardoEnvioMs, ct).ConfigureAwait(false);
 
+                    // Se apunta antes de enviar para no perder un eco que llegue muy rápido.
+                    bool canConfirm = _logFound;
+                    var seen = canConfirm ? ExpectEcho(textEn) : null;
+                    RememberSent(textEn);
+
                     string? error;
                     try { error = GameSender.Send(textEn); }
                     catch (Exception ex) { error = "Error al enviar al juego: " + ex.Message; }
 
-                    if (error == null) RememberSent(textEn);
-                    Enqueue(ChatTarget.Ambos, BuildOwn(textEn, textEs, sent: error == null));
+                    var status = SendStatus.Failed;
+                    if (error == null)
+                    {
+                        status = SendStatus.Sent;
+                        if (seen != null)
+                        {
+                            // El juego escribe tus propios mensajes en el log: si aparece, salió de verdad.
+                            var done = await Task.WhenAny(seen.Task, Task.Delay(4000, ct)).ConfigureAwait(false);
+                            status = done == seen.Task ? SendStatus.Confirmed : SendStatus.Unconfirmed;
+                        }
+                    }
+                    if (seen != null) ForgetEcho(seen);
+                    if (status == SendStatus.Failed) ForgetSent(textEn);
+
+                    Enqueue(ChatTarget.Ambos, BuildOwn(textEn, textEs, status));
                     if (error != null) Notify(error, Tone.Warn);
+                    else if (status == SendStatus.Unconfirmed)
+                        Notify("Tu mensaje no aparece en el log del juego. Si se quedó escrito en el chat del juego, pulsa Enter allí.", Tone.Warn);
                 }
                 finally
                 {
@@ -957,6 +981,45 @@ namespace TraductorNWN
                 _recentSent.RemoveAll(x => now - x.At > 60_000);
                 _recentSent.Add((Normalize(textEn), now));
             }
+        }
+
+        private void ForgetSent(string textEn)
+        {
+            var key = Normalize(textEn);
+            lock (_recentSent)
+            {
+                int i = _recentSent.FindLastIndex(x => x.Text == key);
+                if (i >= 0) _recentSent.RemoveAt(i);
+            }
+        }
+
+        private TaskCompletionSource<bool> ExpectEcho(string textEn)
+        {
+            var seen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_awaitingEcho) _awaitingEcho.Add((Normalize(textEn), seen));
+            return seen;
+        }
+
+        private void ForgetEcho(TaskCompletionSource<bool> seen)
+        {
+            lock (_awaitingEcho) _awaitingEcho.RemoveAll(x => x.Seen == seen);
+        }
+
+        // Llamado desde el hilo del lector del log con cada línea de chat.
+        private void SignalEcho(string text)
+        {
+            TaskCompletionSource<bool>? seen = null;
+            var key = Normalize(text);
+            lock (_awaitingEcho)
+            {
+                int i = _awaitingEcho.FindIndex(x => x.Key == key);
+                if (i >= 0)
+                {
+                    seen = _awaitingEcho[i].Seen;
+                    _awaitingEcho.RemoveAt(i);
+                }
+            }
+            seen?.TrySetResult(true);
         }
 
         private bool ConsumeEcho(string text)
@@ -1177,12 +1240,25 @@ namespace TraductorNWN
              .Add(text, tone, Face.Original);
         }
 
+        private enum SendStatus { Confirmed, Sent, Unconfirmed, Failed }
+
         // Tus mensajes, alineados a la derecha.
-        private static ChatMessage BuildOwn(string textEn, string textEs, bool sent)
+        private static ChatMessage BuildOwn(string textEn, string textEs, SendStatus status)
         {
             var b = new MessageBuilder().Para(ParaKind.Own);
-            if (sent) b.Add("✓ enviado", Tone.Ok, Face.Small);
-            else b.Add("no enviado", Tone.Warn, Face.Small);
+            switch (status)
+            {
+                case SendStatus.Confirmed:
+                case SendStatus.Sent:
+                    b.Add("✓ enviado", Tone.Ok, Face.Small);
+                    break;
+                case SendStatus.Unconfirmed:
+                    b.Add("sin confirmar", Tone.Warn, Face.Small);
+                    break;
+                default:
+                    b.Add("no enviado", Tone.Warn, Face.Small);
+                    break;
+            }
             b.Add("   " + DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) + "   ", Tone.Dim, Face.Small)
              .Add("Tú", Tone.Text, Face.Name);
 
