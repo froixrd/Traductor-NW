@@ -51,10 +51,18 @@ Neverwinter Nights: Enhanced Edition.
 
 ## Cómo generar el .exe
 
+**Sin instalar nada:** GitHub lo compila solo. Cada vez que cambia el código en
+`master`, el flujo *Compilar exe* (pestaña **Actions**) genera
+`dist\TraductorNWN.exe` y lo guarda en el repositorio. También se puede lanzar a
+mano desde Actions → Compilar exe → *Run workflow*.
+
+**En tu PC:**
+
 1. Instala el SDK de .NET 8: https://dotnet.microsoft.com/download/dotnet/8.0 (elige "SDK").
 2. Haz doble clic en `build.bat`.
-3. El ejecutable queda en `dist\TraductorNWN.exe` (un único archivo portable, no
-   necesita .NET instalado).
+
+En ambos casos el ejecutable es un único archivo portable que no necesita .NET
+instalado.
 
 ## Configuración
 

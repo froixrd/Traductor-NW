@@ -1,0 +1,61 @@
+# Compila TraductorNWN.exe en un Windows de GitHub y lo guarda en dist/,
+# así no hace falta tener .NET instalado en tu PC.
+# Se ejecuta solo al cambiar el código en master; también a mano desde la pestaña Actions.
+name: Compilar exe
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '**.cs'
+      - '**.csproj'
+      - 'app.ico'
+      - '.github/workflows/compilar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compilar-exe
+  cancel-in-progress: false
+
+jobs:
+  compilar:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publicar (un solo .exe, sin necesitar .NET)
+        run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+
+      - name: Copiar a dist
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item publish/TraductorNWN.exe dist/TraductorNWN.exe -Force
+          Get-Item dist/TraductorNWN.exe | Select-Object Name, Length
+
+      - name: Subir como descarga del run
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraductorNWN
+          path: dist/TraductorNWN.exe
+
+      - name: Guardar el exe en dist/
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/TraductorNWN.exe
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Actualizar dist/TraductorNWN.exe [skip ci]"
+            git pull --rebase
+            git push
+          }
+          exit 0
