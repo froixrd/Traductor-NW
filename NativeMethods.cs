@@ -84,6 +84,18 @@ namespace TraductorNWN
             public int nTrackPos;
         }
 
+        // ---------- Aspecto: barra de título y barras de desplazamiento oscuras ----------
+        [DllImport("dwmapi.dll")]
+        internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        internal static extern int SetWindowTheme(IntPtr hWnd, string? subAppName, string? subIdList);
+
+        internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        internal const int DWMWA_BORDER_COLOR = 34;
+        internal const int DWMWA_CAPTION_COLOR = 35;
+        internal const int DWMWA_TEXT_COLOR = 36;
+
         // ---------- Identidad de archivos (para detectar la rotación del log) ----------
         [StructLayout(LayoutKind.Sequential)]
         internal struct BY_HANDLE_FILE_INFORMATION

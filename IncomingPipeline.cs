@@ -113,22 +113,22 @@ namespace TraductorNWN
                     {
                         limited = true;
                         var secs = Math.Ceiling((ex.RetryAfter ?? _translator.TimeUntilReady).TotalSeconds);
-                        _onNotice($"{ex.Provider} está limitando las peticiones. Reintento en ~{secs} s; " +
-                                  "mientras tanto los mensajes se acumulan y se traducirán juntos.", true);
+                        _onNotice($"{ex.Provider} está limitando las peticiones. Lo vuelve a intentar en {secs} s " +
+                                  "y traduce de una vez todo lo que llegue mientras tanto.", true);
                     }
                 }
                 catch (TransientTranslationException ex)
                 {
                     if (++consecutiveFailures >= 3)
                     {
-                        FlushUntranslated(batch, take, "error de conexión");
+                        FlushUntranslated(batch, take, "No se pudo conectar con el traductor.");
                         _onNotice("No se pudo traducir: " + ex.Message, true);
                         consecutiveFailures = 0;
                     }
                 }
                 catch (Exception ex)
                 {
-                    FlushUntranslated(batch, take, "error");
+                    FlushUntranslated(batch, take, "El traductor devolvió un error.");
                     _onNotice("Error de traducción: " + ex.Message, true);
                     consecutiveFailures = 0;
                 }
@@ -145,7 +145,7 @@ namespace TraductorNWN
             long now = Environment.TickCount64;
             int n = 0;
             while (n < batch.Count && now - batch[n].EnqueuedAt > _maxWaitMs) n++;
-            if (n > 0) FlushUntranslated(batch, n, "la API va con retraso");
+            if (n > 0) FlushUntranslated(batch, n, $"Llevaba más de {_maxWaitMs / 1000} s esperando; se muestra el original para no quedarte atrás.");
         }
 
         // Entrega los primeros 'count' sin traducir (o traducidos si ya estaban en caché).
