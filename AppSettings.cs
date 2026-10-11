@@ -26,6 +26,9 @@ namespace TraductorNWN
         public bool FiltrarSistema { get; set; } = true;
         public int RetardoEnvioMs { get; set; } = 2000;
         public int[]? Ventana { get; set; }
+        public string Tema { get; set; } = "taberna";
+        public string? Proveedor { get; set; }          // "Google" | "DeepL" (null = DeepL si hay clave)
+        public bool SiempreEncima { get; set; } = true;
 
         [JsonIgnore]
         public string? DeepLKey { get; set; }
@@ -59,7 +62,8 @@ namespace TraductorNWN
             }
             catch { /* si no se puede borrar, se reintentará en el próximo arranque */ }
 
-            s.RetardoEnvioMs = Math.Clamp(s.RetardoEnvioMs, 0, 10_000);
+            s.RetardoEnvioMs = Math.Clamp(s.RetardoEnvioMs, 0, 5_000);
+            s.Proveedor ??= string.IsNullOrEmpty(s.DeepLKey) ? "Google" : "DeepL";
             return s;
         }
 

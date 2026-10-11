@@ -89,7 +89,7 @@ namespace TraductorNWN
 
         public async Task RunAsync(CancellationToken ct)
         {
-            _onStatus("Buscando el log de Neverwinter Nights...", false);
+            _onStatus("Buscando el log de Neverwinter Nights…", false);
 
             FileStream? fs = null;
             string? path = null;
@@ -124,7 +124,7 @@ namespace TraductorNWN
                             if (firstOpen)
                             {
                                 pos = len; // al arrancar no traducimos el historial
-                                _onStatus("Log detectado. Traduciendo en tiempo real...", true);
+                                _onStatus("Log encontrado. Traduciendo en tiempo real.", true);
                             }
                             else if (!newId.IsEmpty && newId == fileId)
                             {
@@ -134,7 +134,7 @@ namespace TraductorNWN
                             {
                                 pos = len <= MaxReplayBytes ? 0 : len;
                                 assembler.Reset();
-                                _onStatus("Nueva sesión de juego detectada; siguiendo el log nuevo.", false);
+                                _onStatus("Partida nueva detectada; siguiendo el log nuevo.", false);
                             }
 
                             fileId = newId;

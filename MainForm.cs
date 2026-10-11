@@ -1,8 +1,7 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
-using FontAwesome.Sharp;
-using Guna.UI2.WinForms;
 
 namespace TraductorNWN
 {
@@ -10,63 +9,12 @@ namespace TraductorNWN
 
     public sealed class MainForm : Form
     {
-        // ---------- Paleta: negro + naranja (cada tono con un único rol) ----------
-        private static readonly Color BgApp = ColorTranslator.FromHtml("#0a0a0a");       // fondo de la ventana
-        private static readonly Color BgSurface = ColorTranslator.FromHtml("#151515");   // tarjetas/paneles
-        private static readonly Color BgSurfaceHover = ColorTranslator.FromHtml("#1f1f1f");
-        private static readonly Color BgField = ColorTranslator.FromHtml("#1c1c1c");     // campos editables
-        private static readonly Color BgFieldHover = ColorTranslator.FromHtml("#242424");
-        private static readonly Color BgChat = ColorTranslator.FromHtml("#000000");      // lectura del chat
-        private static readonly Color Coral = ColorTranslator.FromHtml("#ff8a3d");       // acento principal
-        private static readonly Color CoralHover = ColorTranslator.FromHtml("#ffa15c");
-        private static readonly Color CoralDark = ColorTranslator.FromHtml("#1a0e05");   // texto sobre fondo naranja
-        private static readonly Color Teal = ColorTranslator.FromHtml("#d97a2e");        // acento del estado DeepL / nombres
-        private static readonly Color Warn = ColorTranslator.FromHtml("#e5534b");        // API limitando / errores
-        private static readonly Color TextMain = ColorTranslator.FromHtml("#f5f0ea");
-        private static readonly Color TextDim = ColorTranslator.FromHtml("#8a8580");
-        private static readonly Color BorderSoft = ColorTranslator.FromHtml("#262626");
-
-        private const int RadiusCard = 10;
-        private const int RadiusControl = 8;
-        private const int Gap = 14;
-
-        // ---------- Comportamiento ----------
         private const int MaxMensajesPorPanel = 200;
 
         private static readonly Regex EmoteRegex = new(@"\*([^*]+)\*", RegexOptions.Compiled);
-
-        private static readonly Dictionary<string, string> NombresCanal = new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Shout"] = "Grito",
-            ["Whisper"] = "Susurro",
-            ["Tell"] = "Privado",
-            ["Party"] = "Grupo",
-            ["DM"] = "DM",
-            ["Server"] = "Servidor"
-        };
-
-        private static readonly Lazy<Font> MonoFont = new(CreateMonoFont);
-
-        // ---------- Controles ----------
-        private readonly Panel _header;
-        private readonly Guna2Panel _statusBadge;
-        private readonly Label _statusDot;
-        private readonly Label _titleLabel;
-        private readonly RichTextBox _chatBoxAmbos;
-        private readonly RichTextBox _chatBoxIngles;
-        private readonly RichTextBox _chatBoxEspanol;
-        private readonly ChatView _viewAmbos;
-        private readonly ChatView _viewIngles;
-        private readonly ChatView _viewEspanol;
-        private readonly Guna2TextBox _inputBox;
-        private readonly Guna2TextBox _deeplKeyBox;
-        private readonly Guna2Button _deeplBtn;
-        private readonly IconButton _mayusBtn;
-        private readonly Guna2Panel _mayusBtnFrame;
-        private readonly IconButton _filtroBtn;
-        private readonly Guna2Panel _filtroBtnFrame;
-        private readonly ToolTip _toolTip = new();
-        private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 60 };
+        private static readonly Regex Spaces = new(@"\s+", RegexOptions.Compiled);
+        private static readonly NumberFormatInfo EsNumbers = new() { NumberGroupSeparator = ".", NumberDecimalSeparator = "," };
+        private static readonly string[] TabNames = { "Ambos", "Inglés", "Español" };
 
         // ---------- Servicios ----------
         private readonly AppSettings _settings = AppSettings.Load();
@@ -80,419 +28,639 @@ namespace TraductorNWN
         private readonly Channel<string> _outgoing = Channel.CreateUnbounded<string>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
 
-        // Lo que hay que pintar: los hilos de fondo lo dejan aquí y un timer de la UI
-        // lo vuelca por lotes (nada de Invoke síncronos por cada fragmento de texto).
-        private readonly ConcurrentQueue<DisplayItem> _display = new();
+        // Lo que hay que pintar: los hilos de fondo lo dejan aquí y un timer de la UI lo vuelca por lotes.
+        private readonly ConcurrentQueue<(ChatTarget Target, ChatMessage Message)> _display = new();
 
-        private int _badgeTicks;
-        private volatile bool _mayusculasActivas;
+        // Mensajes enviados hace poco: su eco en el log no se repite en la pestaña Ambos.
+        private readonly List<(string Text, long At)> _recentSent = new();
+
+        private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 60 };
+        private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 700 };
+
+        private AppTheme _theme;
+        private volatile bool _mayusculas;
         private volatile bool _filtrarSistema;
+        private volatile bool _logFound;
+        private volatile string? _lastOutgoing;
+        private int _outPending;
+        private int _statusTicks;
+        private bool _suppressEvents;
 
-        private readonly record struct DisplayItem(ChatTarget Target, List<Run> Runs);
+        // ---------- Controles ----------
+        private ThemedPanel _header = null!;
+        private GlyphBox _logo = null!;
+        private ThemedLabel _title = null!;
+        private ThemedLabel _subtitle = null!;
+        private StatusPill _pill = null!;
+        private FlatButton _settingsBtn = null!;
+
+        private ThemedPanel _settingsPanel = null!;
+        private TableLayoutPanel _settingsTable = null!;
+        private SegmentedControl _providerSeg = null!;
+        private SegmentedControl _themeSeg = null!;
+        private FieldBox _keyBox = null!;
+        private FlatButton _checkBtn = null!;
+        private ThemedLabel _keyStatus = null!;
+        private ThinProgress _usageBar = null!;
+        private ThemedLabel _usageLabel = null!;
+        private Slider _delaySlider = null!;
+        private ThemedLabel _delayValue = null!;
+        private ToggleSwitch _filterSwitch = null!;
+        private ToggleSwitch _topSwitch = null!;
+        private Control[] _deeplRowControls = Array.Empty<Control>();
+
+        private ThemedPanel _tabRow = null!;
+        private FlatButton[] _tabButtons = Array.Empty<FlatButton>();
+        private FlatButton _filterLink = null!;
+
+        private ThemedPanel _chatHost = null!;
+        private RichTextBox[] _boxes = Array.Empty<RichTextBox>();
+        private ChatView[] _views = Array.Empty<ChatView>();
+
+        private ThemedPanel _footer = null!;
+        private FieldBox _input = null!;
+        private FlatButton _capsBtn = null!;
+        private FlatButton _sendBtn = null!;
+        private ThemedLabel _hint = null!;
 
         public MainForm()
         {
-            Text = "Traductor · Neverwinter Nights";
-            Width = 720;
-            Height = 760;
-            MinimumSize = new Size(560, 560);
-            BackColor = BgApp;
-            TopMost = true;
-            Font = new Font("Segoe UI", 9.5f);
-            Padding = new Padding(16);
+            _theme = Themes.Get(_settings.Tema);
+
+            Text = "Traductor NWN";
+            AutoScaleMode = AutoScaleMode.None;
+            Font = UiFonts.Ui(9.75f);
+            Size = new Size(Dpi.S(720), Dpi.S(780));
+            MinimumSize = new Size(Dpi.S(560), Dpi.S(560));
+            BackColor = _theme.App;
 
             try
             {
                 Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             }
-            catch { /* si falla, la ventana usa el icono genérico de WinForms */ }
+            catch { /* si falla, se usa el icono genérico */ }
 
-            // ---------- Cabecera ----------
-            _header = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = BgApp };
+            BuildHeader();
+            BuildSettings();
+            BuildTabs();
+            BuildChat();
+            BuildFooter();
 
-            var brandMark = new Panel
-            {
-                BackColor = Coral,
-                Size = new Size(4, 34),
-                Location = new Point(0, 6)
-            };
-
-            var appName = new Label
-            {
-                Text = "Traductor de Chat",
-                ForeColor = TextMain,
-                Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold),
-                AutoSize = true,
-                Location = new Point(16, 3)
-            };
-            var appSubtitle = new Label
-            {
-                Text = "NEVERWINTER NIGHTS  ·  EN ⇄ ES",
-                ForeColor = TextDim,
-                Font = new Font("Segoe UI", 8f, FontStyle.Bold),
-                AutoSize = true,
-                Location = new Point(17, 32)
-            };
-
-            // Badge de estado: proveedor activo, pausas por límite de la API y mensajes en cola.
-            _statusBadge = new Guna2Panel
-            {
-                FillColor = BgSurface,
-                BorderColor = BorderSoft,
-                BorderThickness = 1,
-                BorderRadius = RadiusControl,
-                Size = new Size(168, 34),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-
-            // BackColor explícito: si no, heredan el BackColor (negro) del Guna2Panel y no su FillColor.
-            _statusDot = new Label
-            {
-                Text = "●",
-                ForeColor = Coral,
-                BackColor = BgSurface,
-                Font = new Font("Segoe UI", 9f),
-                AutoSize = true,
-                Margin = Padding.Empty
-            };
-            _titleLabel = new Label
-            {
-                Text = "Google Translate",
-                ForeColor = TextMain,
-                BackColor = BgSurface,
-                Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
-                AutoSize = true,
-                Margin = Padding.Empty
-            };
-            _statusBadge.Controls.Add(_statusDot);
-            _statusBadge.Controls.Add(_titleLabel);
-
-            _header.Controls.Add(brandMark);
-            _header.Controls.Add(appName);
-            _header.Controls.Add(appSubtitle);
-            _header.Controls.Add(_statusBadge);
-            _header.Resize += (s, e) => PositionStatusBadge();
-            LayoutStatusBadge();
-
-            var headerDivider = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = BorderSoft, Margin = new Padding(0) };
-
-            // ---------- Chat (pestañas: Ambos / Inglés / Español) ----------
-            var chatContainer = new Panel { Dock = DockStyle.Fill, BackColor = BgApp, Padding = new Padding(0, 4, 0, Gap) };
-
-            var tabs = new Guna2TabControl
-            {
-                Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                TabButtonSize = new Size(140, 38),
-                TabMenuOrientation = TabMenuOrientation.HorizontalTop,
-                TabMenuBackColor = BgSurface
-            };
-            tabs.TabButtonIdleState.FillColor = BgSurface;
-            tabs.TabButtonIdleState.InnerColor = BgSurface;
-            tabs.TabButtonIdleState.ForeColor = TextDim;
-            tabs.TabButtonIdleState.BorderColor = BorderSoft;
-            tabs.TabButtonHoverState.FillColor = BgSurfaceHover;
-            tabs.TabButtonHoverState.InnerColor = BgSurfaceHover;
-            tabs.TabButtonHoverState.ForeColor = TextMain;
-            tabs.TabButtonHoverState.BorderColor = BorderSoft;
-            tabs.TabButtonSelectedState.FillColor = BgChat;
-            tabs.TabButtonSelectedState.InnerColor = BgChat;
-            tabs.TabButtonSelectedState.ForeColor = Coral;
-            tabs.TabButtonSelectedState.BorderColor = Coral;
-
-            _chatBoxAmbos = CreateChatBox();
-            _chatBoxIngles = CreateChatBox();
-            _chatBoxEspanol = CreateChatBox();
-            _viewAmbos = new ChatView(_chatBoxAmbos, MaxMensajesPorPanel);
-            _viewIngles = new ChatView(_chatBoxIngles, MaxMensajesPorPanel);
-            _viewEspanol = new ChatView(_chatBoxEspanol, MaxMensajesPorPanel);
-
-            tabs.TabPages.Add(CreateChatTab("Ambos", _chatBoxAmbos));
-            tabs.TabPages.Add(CreateChatTab("Inglés", _chatBoxIngles));
-            tabs.TabPages.Add(CreateChatTab("Español", _chatBoxEspanol));
-
-            var tabsBorder = new Guna2Panel
-            {
-                Dock = DockStyle.Fill,
-                FillColor = BgChat,
-                BorderColor = BorderSoft,
-                BorderThickness = 1,
-                BorderRadius = 0,
-                Padding = new Padding(2)
-            };
-            tabsBorder.Controls.Add(tabs);
-            chatContainer.Controls.Add(tabsBorder);
-
-            // ---------- Entrada de texto + interruptores ----------
-            var inputPanel = new Panel { Dock = DockStyle.Bottom, Height = 78, BackColor = BgApp, Padding = new Padding(0, 22, 0, Gap) };
-            var inputRow = new Panel { Dock = DockStyle.Fill };
-
-            var mayus = CreateToggle(IconChar.TextHeight, "Enviar los mensajes en MAYÚSCULAS");
-            _mayusBtn = mayus.Button;
-            _mayusBtnFrame = mayus.Frame;
-            _mayusBtn.Click += MayusBtn_Click;
-
-            var filtro = CreateToggle(IconChar.Filter,
-                "Solo traducir el chat de jugadores.\n" +
-                "El combate y los mensajes del sistema se muestran sin traducir en la pestaña Inglés,\n" +
-                "así no se gastan peticiones de la API ni te bloquean en peleas largas.");
-            _filtroBtn = filtro.Button;
-            _filtroBtnFrame = filtro.Frame;
-            _filtroBtn.Click += FiltroBtn_Click;
-
-            _inputBox = new Guna2TextBox
-            {
-                Dock = DockStyle.Fill,
-                FillColor = BgField,
-                BorderColor = BorderSoft,
-                BorderThickness = 1,
-                BorderRadius = RadiusControl,
-                ForeColor = TextMain,
-                Font = new Font("Segoe UI", 10.5f),
-                PlaceholderText = "Escribe en español y pulsa Enter para enviarlo al juego…"
-            };
-            _inputBox.FocusedState.BorderColor = Coral;
-            _inputBox.HoverState.BorderColor = Coral;
-            _inputBox.KeyDown += InputBox_KeyDown;
-
-            var inputBoxHost = new Panel { Dock = DockStyle.Fill };
-            inputBoxHost.Controls.Add(_inputBox);
-
-            // Orden de alta = orden de docking: el Fill primero, y de los Right el último queda más a la derecha.
-            inputRow.Controls.Add(inputBoxHost);
-            inputRow.Controls.Add(mayus.Host);
-            inputRow.Controls.Add(filtro.Host);
-            inputPanel.Controls.Add(inputRow);
-
-            // ---------- Panel DeepL ----------
-            var configPanel = new Panel { Dock = DockStyle.Bottom, Height = 74, BackColor = BgApp, Padding = new Padding(0, 0, 0, Gap) };
-            var deeplCard = new Guna2Panel
-            {
-                Dock = DockStyle.Fill,
-                FillColor = BgSurface,
-                BorderColor = BorderSoft,
-                BorderThickness = 1,
-                BorderRadius = RadiusCard,
-                Padding = new Padding(14, 10, 14, 10)
-            };
-
-            var deeplLabel = new Label
-            {
-                Text = "DeepL",
-                Dock = DockStyle.Left,
-                Width = 58,
-                ForeColor = TextMain,
-                BackColor = BgSurface,
-                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-
-            _deeplBtn = new Guna2Button
-            {
-                Text = "CONECTAR",
-                Dock = DockStyle.Right,
-                Width = 108,
-                FillColor = Coral,
-                ForeColor = CoralDark,
-                BorderRadius = RadiusControl,
-                Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-                Cursor = Cursors.Hand,
-                Animated = true
-            };
-            _deeplBtn.HoverState.FillColor = CoralHover;
-            _deeplBtn.Click += DeeplBtn_Click;
-            _toolTip.SetToolTip(_deeplBtn, "Comprueba y guarda la clave. Con el campo vacío vuelve a Google Translate.");
-
-            var keyFieldHost = new Panel { Dock = DockStyle.Fill, BackColor = BgSurface, Padding = new Padding(10, 0, 10, 0) };
-            _deeplKeyBox = new Guna2TextBox
-            {
-                Dock = DockStyle.Fill,
-                FillColor = BgField,
-                BorderColor = BorderSoft,
-                BorderThickness = 1,
-                BorderRadius = RadiusControl,
-                ForeColor = TextMain,
-                PasswordChar = '•',
-                Font = new Font("Segoe UI", 9.5f),
-                PlaceholderText = "Clave de API de DeepL (opcional)"
-            };
-            _deeplKeyBox.FocusedState.BorderColor = Coral;
-            _deeplKeyBox.HoverState.BorderColor = Coral;
-            _deeplKeyBox.KeyDown += (s, e) =>
-            {
-                if (e.KeyCode != Keys.Enter) return;
-                e.SuppressKeyPress = true;
-                if (_deeplBtn.Enabled) DeeplBtn_Click(_deeplBtn, EventArgs.Empty);
-            };
-            keyFieldHost.Controls.Add(_deeplKeyBox);
-
-            deeplCard.Controls.Add(keyFieldHost);
-            deeplCard.Controls.Add(deeplLabel);
-            deeplCard.Controls.Add(_deeplBtn);
-            configPanel.Controls.Add(deeplCard);
-
-            Controls.Add(chatContainer);
-            Controls.Add(inputPanel);
-            Controls.Add(configPanel);
-            Controls.Add(headerDivider);
+            // Dock: el último en añadirse queda más arriba.
+            Controls.Add(_chatHost);
+            Controls.Add(_footer);
+            Controls.Add(_tabRow);
+            Controls.Add(_settingsPanel);
             Controls.Add(_header);
 
-            // ---------- Servicios y estado guardado ----------
-            _watcher = new LogWatcher(OnLogLines, (msg, important) => Notify(msg, important ? Teal : TextDim));
-            _incoming = new IncomingPipeline(_translator, ShowTranslated, ShowUntranslated,
-                (msg, warn) => Notify(msg, warn ? Warn : Teal));
-            _translator.Notice += msg => Notify(msg, Warn);
-
-            _mayusculasActivas = _settings.Mayusculas;
-            _filtrarSistema = _settings.FiltrarSistema;
-            PaintToggle(_mayusBtnFrame, _mayusBtn, _mayusculasActivas);
-            PaintToggle(_filtroBtnFrame, _filtroBtn, _filtrarSistema);
-
-            if (!string.IsNullOrEmpty(_settings.DeepLKey))
+            _watcher = new LogWatcher(OnLogLines, (msg, found) =>
             {
-                _deeplKeyBox.Text = _settings.DeepLKey;
-                _translator.DeepLKey = _settings.DeepLKey;
-            }
+                if (found) _logFound = true;
+                Notify(msg, found ? Tone.Accent : Tone.Dim);
+            });
+            _incoming = new IncomingPipeline(_translator, ShowTranslated, ShowUntranslated,
+                (msg, warn) => Notify(msg, warn ? Tone.Warn : Tone.Ok));
+            _translator.Notice += msg => Notify(msg, Tone.Warn);
 
+            LoadSettingsIntoUi();
+            ApplyTheme(_theme);
             RestoreWindowBounds();
-            UpdateBadge();
+
+            _uiTimer.Tick += UiTimer_Tick;
+            _saveTimer.Tick += (s, e) =>
+            {
+                _saveTimer.Stop();
+                _settings.Save();
+            };
 
             Load += MainForm_Load;
+            Shown += (s, e) => _input.Input.Focus();
             FormClosing += MainForm_FormClosing;
         }
 
         // ======================================================================
-        //  Construcción de la UI
+        //  Construcción de la interfaz
         // ======================================================================
 
-        private static Font CreateMonoFont()
+        private void BuildHeader()
         {
-            // Cascadia Code si está instalada (Windows Terminal / VS); si no, Consolas.
-            try
+            _header = new ThemedPanel { Dock = DockStyle.Top, Height = Dpi.S(68), Back = Surface.Raised, BottomBorder = Surface.Border };
+            _logo = new GlyphBox { Glyph = Glyph.D20, Tone = Tone.Accent, Stroke = 1.4f, Size = new Size(Dpi.S(30), Dpi.S(30)) };
+            _title = new ThemedLabel { Text = "Traductor de chat", Font = UiFonts.Heading(15.75f), Tone = Tone.Text, AutoEllipsis = true };
+            _subtitle = new ThemedLabel { Text = "Neverwinter Nights, del inglés al español", Font = UiFonts.Ui(9.5f), Tone = Tone.Dim, AutoEllipsis = true };
+
+            _pill = new StatusPill { AccessibleDescription = "Estado del traductor. Pulsa para abrir los ajustes." };
+            _pill.Click += (s, e) => ToggleSettings();
+
+            _settingsBtn = new FlatButton
             {
-                using var installed = new System.Drawing.Text.InstalledFontCollection();
-                bool hasCascadia = installed.Families.Any(f => f.Name.Equals("Cascadia Code", StringComparison.OrdinalIgnoreCase));
-                return hasCascadia ? new Font("Cascadia Code", 9.5f) : new Font("Consolas", 9.5f);
-            }
-            catch
-            {
-                return new Font("Consolas", 9.5f);
-            }
+                Kind = ButtonKind.Ghost,
+                Glyph = Glyph.Sliders,
+                GlyphStroke = 1.8f,
+                Size = new Size(Dpi.S(44), Dpi.S(44)),
+                AccessibleName = "Ajustes"
+            };
+            _settingsBtn.Click += (s, e) => ToggleSettings();
+
+            _header.Controls.AddRange(new Control[] { _logo, _title, _subtitle, _pill, _settingsBtn });
+            _header.Resize += (s, e) => LayoutHeader();
         }
 
-        private static RichTextBox CreateChatBox() => new()
+        private void LayoutHeader()
         {
-            Dock = DockStyle.Fill,
-            BackColor = BgChat,
-            ForeColor = TextMain,
-            Font = MonoFont.Value,
-            ReadOnly = true,
-            BorderStyle = BorderStyle.None,
-            DetectUrls = false,
-            HideSelection = false
+            if (_header == null) return;
+            int w = _header.ClientSize.Width, h = _header.ClientSize.Height - 1;
+            _logo.Location = new Point(Dpi.S(20), (h - _logo.Height) / 2);
+            _settingsBtn.Location = new Point(w - Dpi.S(14) - _settingsBtn.Width, (h - _settingsBtn.Height) / 2);
+            _pill.Location = new Point(_settingsBtn.Left - Dpi.S(8) - _pill.Width, (h - _pill.Height) / 2);
+
+            int x = _logo.Right + Dpi.S(14);
+            int width = Math.Max(0, _pill.Left - Dpi.S(14) - x);
+            int th = _title.PreferredHeight, sh = _subtitle.PreferredHeight;
+            int top = (h - th - sh) / 2;
+            _title.SetBounds(x, top, width, th);
+            _subtitle.SetBounds(x, top + th, width, sh);
+        }
+
+        private void BuildSettings()
+        {
+            _settingsPanel = new ThemedPanel
+            {
+                Dock = DockStyle.Top,
+                Back = Surface.Raised,
+                BottomBorder = Surface.Border,
+                Visible = false,
+                Padding = new Padding(Dpi.S(20), Dpi.S(18), Dpi.S(20), Dpi.S(19))
+            };
+
+            _settingsTable = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            _settingsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Dpi.S(170)));
+            _settingsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _settingsTable.SizeChanged += (s, e) => UpdateSettingsHeight();
+
+            // --- Traductor ---
+            _providerSeg = new SegmentedControl { Anchor = AnchorStyles.Left | AnchorStyles.Top };
+            _providerSeg.AddOption("Google Translate");
+            _providerSeg.AddOption("DeepL");
+            _providerSeg.SelectedIndexChanged += ProviderSeg_SelectedIndexChanged;
+            AddSettingsRow("Traductor", _providerSeg, _providerSeg.Height);
+
+            // --- Clave de DeepL ---
+            var keyCell = NewCell(Dpi.S(66));
+            _keyBox = new FieldBox { Radius = 8, InsetX = 12 };
+            _keyBox.Input.UseSystemPasswordChar = true;
+            _keyBox.Input.Font = UiFonts.Ui(10.5f);
+            _keyBox.Input.Hint = "Pega aquí tu clave de DeepL";
+            _keyBox.Input.AccessibleName = "Clave de DeepL";
+            _keyBox.Input.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode != Keys.Enter) return;
+                e.SuppressKeyPress = true;
+                if (_checkBtn.Enabled) CheckKey_Click(_checkBtn, EventArgs.Empty);
+            };
+            _checkBtn = new FlatButton { Kind = ButtonKind.Outline, Text = "Comprobar" };
+            _checkBtn.Click += CheckKey_Click;
+            _keyStatus = new ThemedLabel { Font = UiFonts.Ui(9f), Tone = Tone.Dim, AutoEllipsis = true };
+            keyCell.Controls.AddRange(new Control[] { _keyBox, _checkBtn, _keyStatus });
+            keyCell.Resize += (s, e) =>
+            {
+                int w = keyCell.ClientSize.Width;
+                int bw = Gfx.Measure("Comprobando…", UiFonts.UiStrong(9.75f)).Width + Dpi.S(32);
+                _checkBtn.SetBounds(w - bw, 0, bw, Dpi.S(40));
+                _keyBox.SetBounds(0, 0, Math.Max(40, w - bw - Dpi.S(10)), Dpi.S(40));
+                _keyStatus.SetBounds(0, Dpi.S(46), w, Dpi.S(20));
+            };
+            var keyLabel = AddSettingsRow("Clave de DeepL", keyCell, Dpi.S(40));
+
+            // --- Uso este mes ---
+            var usageCell = NewCell(Dpi.S(38));
+            _usageBar = new ThinProgress { AccessibleName = "Caracteres de DeepL usados este mes" };
+            _usageLabel = new ThemedLabel { Font = UiFonts.Ui(9f), Tone = Tone.Dim, AutoEllipsis = true };
+            usageCell.Controls.AddRange(new Control[] { _usageBar, _usageLabel });
+            usageCell.Resize += (s, e) =>
+            {
+                int w = usageCell.ClientSize.Width;
+                _usageBar.SetBounds(0, Dpi.S(5), w, Dpi.S(8));
+                _usageLabel.SetBounds(0, Dpi.S(17), w, Dpi.S(20));
+            };
+            var usageLabel = AddSettingsRow("Uso este mes", usageCell, Dpi.S(18));
+            _deeplRowControls = new Control[] { keyLabel, keyCell, usageLabel, usageCell };
+
+            // --- Espera antes de enviar ---
+            var delayCell = NewCell(Dpi.S(28));
+            _delaySlider = new Slider { Minimum = 0, Maximum = 10, AccessibleName = "Espera antes de enviar al juego" };
+            _delaySlider.ValueChanged += DelaySlider_ValueChanged;
+            _delayValue = new ThemedLabel { Font = UiFonts.Ui(9.75f), Tone = Tone.Text, TextAlign = ContentAlignment.MiddleRight };
+            delayCell.Controls.AddRange(new Control[] { _delaySlider, _delayValue });
+            delayCell.Resize += (s, e) =>
+            {
+                int w = delayCell.ClientSize.Width;
+                _delayValue.SetBounds(w - Dpi.S(52), 0, Dpi.S(52), Dpi.S(28));
+                _delaySlider.SetBounds(0, 0, Math.Max(40, w - Dpi.S(60)), Dpi.S(28));
+            };
+            AddSettingsRow("Esperar antes de enviar", delayCell, Dpi.S(28));
+
+            // --- Qué se traduce ---
+            var filterCell = NewCell(Dpi.S(62));
+            _filterSwitch = new ToggleSwitch { AccessibleName = "Traducir solo el chat de jugadores" };
+            _filterSwitch.CheckedChanged += FilterSwitch_CheckedChanged;
+            var filterTitle = new ThemedLabel { Text = "Solo el chat de jugadores", Font = UiFonts.Ui(10f), Tone = Tone.Text };
+            var filterDesc = new ThemedLabel
+            {
+                Text = "El combate y los avisos del sistema aparecen sin traducir en la pestaña Inglés. Así no se gastan peticiones en las peleas.",
+                Font = UiFonts.Ui(9f),
+                Tone = Tone.Dim,
+                TextAlign = ContentAlignment.TopLeft
+            };
+            filterCell.Controls.AddRange(new Control[] { _filterSwitch, filterTitle, filterDesc });
+            filterCell.Resize += (s, e) =>
+            {
+                int w = filterCell.ClientSize.Width, x = Dpi.S(56);
+                _filterSwitch.Location = Point.Empty;
+                filterTitle.SetBounds(x, 0, Math.Max(10, w - x), Dpi.S(26));
+                filterDesc.SetBounds(x, Dpi.S(26), Math.Max(10, w - x), Dpi.S(36));
+            };
+            AddSettingsRow("Qué se traduce", filterCell, Dpi.S(26));
+
+            // --- Colores ---
+            _themeSeg = new SegmentedControl { Anchor = AnchorStyles.Left | AnchorStyles.Top };
+            foreach (var theme in Themes.All) _themeSeg.AddOption(theme.Name, theme.Accent);
+            _themeSeg.SelectedIndexChanged += ThemeSeg_SelectedIndexChanged;
+            AddSettingsRow("Colores", _themeSeg, _themeSeg.Height);
+
+            // --- Ventana ---
+            var windowCell = NewCell(Dpi.S(26));
+            _topSwitch = new ToggleSwitch { AccessibleName = "Mantener la ventana siempre encima del juego" };
+            _topSwitch.CheckedChanged += TopSwitch_CheckedChanged;
+            var topLabel = new ThemedLabel { Text = "Siempre encima del juego", Font = UiFonts.Ui(10f), Tone = Tone.Text };
+            windowCell.Controls.AddRange(new Control[] { _topSwitch, topLabel });
+            windowCell.Resize += (s, e) =>
+            {
+                _topSwitch.Location = Point.Empty;
+                topLabel.SetBounds(Dpi.S(56), 0, Math.Max(10, windowCell.ClientSize.Width - Dpi.S(56)), Dpi.S(26));
+            };
+            var lastLabel = AddSettingsRow("Ventana", windowCell, Dpi.S(26));
+            lastLabel.Margin = new Padding(0, 0, Dpi.S(12), 0);
+            windowCell.Margin = Padding.Empty;
+
+            _settingsPanel.Controls.Add(_settingsTable);
+        }
+
+        private static ThemedPanel NewCell(int height) => new()
+        {
+            Back = Surface.Raised,
+            Height = height,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
         };
 
-        private static TabPage CreateChatTab(string title, RichTextBox box)
+        private ThemedLabel AddSettingsRow(string text, Control value, int labelHeight)
         {
-            var page = new TabPage(title) { BackColor = BgChat, Padding = new Padding(0) };
-            var pad = new Panel { Dock = DockStyle.Fill, BackColor = BgChat, Padding = new Padding(1, 8, 1, 1) };
-            pad.Controls.Add(box);
-            page.Controls.Add(pad);
-            return page;
-        }
-
-        private (Panel Host, Guna2Panel Frame, IconButton Button) CreateToggle(IconChar icon, string tooltip)
-        {
-            var host = new Panel { Dock = DockStyle.Right, Width = 50, Padding = new Padding(Gap, 0, 0, 0) };
-            var frame = new Guna2Panel
+            int gap = Dpi.S(16);
+            var label = new ThemedLabel
             {
-                Dock = DockStyle.Fill,
-                FillColor = BgField,
-                BorderColor = BorderSoft,
-                BorderThickness = 1,
-                BorderRadius = RadiusControl,
-                Padding = new Padding(4)
+                Text = text,
+                Font = UiFonts.Ui(9.75f),
+                Tone = Tone.Dim,
+                Size = new Size(Dpi.S(158), labelHeight),
+                Anchor = AnchorStyles.Left | AnchorStyles.Top,
+                Margin = new Padding(0, 0, Dpi.S(12), gap)
             };
-            var button = new IconButton
+            value.Margin = new Padding(0, 0, 0, gap);
+            int row = _settingsTable.RowCount++;
+            _settingsTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _settingsTable.Controls.Add(label, 0, row);
+            _settingsTable.Controls.Add(value, 1, row);
+            return label;
+        }
+
+        private void UpdateSettingsHeight()
+        {
+            int h = _settingsPanel.Padding.Vertical + _settingsTable.Height + 1;
+            if (_settingsPanel.Height != h) _settingsPanel.Height = h;
+        }
+
+        private void BuildTabs()
+        {
+            _tabRow = new ThemedPanel { Dock = DockStyle.Top, Height = Dpi.S(46), Back = Surface.App, BottomBorder = Surface.Line };
+            _tabButtons = new FlatButton[TabNames.Length];
+            for (int i = 0; i < TabNames.Length; i++)
             {
-                IconChar = icon,
-                IconFont = IconFont.Solid,
-                IconColor = TextDim,
-                IconSize = 20,
-                Dock = DockStyle.Fill,
-                BackColor = BgField,
-                FlatStyle = FlatStyle.Flat,
-                Cursor = Cursors.Hand,
-                Text = ""
-            };
-            button.FlatAppearance.BorderSize = 0;
-            button.FlatAppearance.MouseOverBackColor = BgFieldHover;
-            _toolTip.SetToolTip(button, tooltip);
-
-            frame.Controls.Add(button);
-            host.Controls.Add(frame);
-            return (host, frame, button);
-        }
-
-        private static void PaintToggle(Guna2Panel frame, IconButton button, bool active)
-        {
-            var bg = active ? Coral : BgField;
-            button.BackColor = bg;
-            button.IconColor = active ? CoralDark : TextDim;
-            button.FlatAppearance.MouseOverBackColor = active ? CoralHover : BgFieldHover;
-            frame.FillColor = bg;
-            frame.BorderColor = active ? Coral : BorderSoft;
-        }
-
-        // Centra punto y texto dentro del badge y ajusta su ancho al texto actual.
-        private void LayoutStatusBadge()
-        {
-            const int leftPad = 16;
-            const int gap = 8;
-            const int rightPad = 16;
-            _statusDot.Location = new Point(leftPad, (_statusBadge.Height - _statusDot.Height) / 2);
-            _titleLabel.Location = new Point(_statusDot.Right + gap, (_statusBadge.Height - _titleLabel.Height) / 2);
-
-            int width = Math.Max(120, _titleLabel.Left + _titleLabel.PreferredWidth + rightPad);
-            if (_statusBadge.Width != width) _statusBadge.Width = width;
-            PositionStatusBadge();
-        }
-
-        private void PositionStatusBadge() =>
-            _statusBadge.Location = new Point(_header.Width - _statusBadge.Width - 4, 13);
-
-        private void UpdateBadge()
-        {
-            bool deepl = _translator.ActiveProvider == Proveedor.DeepL;
-            string name = deepl ? "DeepL" : "Google";
-            var cooldown = _translator.CooldownRemaining;
-            int pending = _incoming.Pending;
-
-            string text;
-            Color dot;
-            if (cooldown.TotalSeconds >= 1)
-            {
-                text = $"{name} · pausa {Math.Ceiling(cooldown.TotalSeconds)} s";
-                dot = Warn;
+                int index = i;
+                var tab = new FlatButton
+                {
+                    Kind = ButtonKind.Tab,
+                    Text = TabNames[i],
+                    OuterRole = Surface.App,
+                    Font = UiFonts.Ui(10.5f),
+                    AccessibleRole = AccessibleRole.PageTab
+                };
+                tab.Click += (s, e) => SelectTab(index);
+                _tabButtons[i] = tab;
+                _tabRow.Controls.Add(tab);
             }
-            else if (pending >= 5)
+            _tabButtons[0].Checked = true;
+
+            _filterLink = new FlatButton
             {
-                text = $"{name} · cola {pending}";
-                dot = deepl ? Teal : Coral;
+                Kind = ButtonKind.Link,
+                OuterRole = Surface.App,
+                Glyph = Glyph.Filter,
+                GlyphSize = 13f,
+                GlyphStroke = 2f,
+                Text = "Solo chat de jugadores",
+                Font = UiFonts.Ui(9.5f),
+                AccessibleDescription = "Abre los ajustes"
+            };
+            _filterLink.Click += (s, e) => ToggleSettings(true);
+            _tabRow.Controls.Add(_filterLink);
+            _tabRow.Resize += (s, e) => LayoutTabs();
+        }
+
+        private void LayoutTabs()
+        {
+            if (_tabRow == null) return;
+            int x = Dpi.S(20), h = _tabRow.ClientSize.Height - 1;
+            foreach (var tab in _tabButtons)
+            {
+                int w = tab.ContentWidth() + Dpi.S(8);
+                tab.SetBounds(x, 0, w, h);
+                x += w + Dpi.S(16);
+            }
+            int lw = _filterLink.ContentWidth() + Dpi.S(16);
+            _filterLink.SetBounds(_tabRow.ClientSize.Width - Dpi.S(12) - lw, Dpi.S(7), lw, h - Dpi.S(14));
+        }
+
+        private void BuildChat()
+        {
+            _chatHost = new ThemedPanel
+            {
+                Dock = DockStyle.Fill,
+                Back = Surface.App,
+                Padding = new Padding(Dpi.S(22), Dpi.S(12), Dpi.S(4), Dpi.S(6))
+            };
+            _boxes = new RichTextBox[TabNames.Length];
+            _views = new ChatView[TabNames.Length];
+            for (int i = 0; i < TabNames.Length; i++)
+            {
+                var box = new RichTextBox
+                {
+                    Dock = DockStyle.Fill,
+                    ReadOnly = true,
+                    BorderStyle = BorderStyle.None,
+                    DetectUrls = false,
+                    HideSelection = false,
+                    ScrollBars = RichTextBoxScrollBars.Vertical,
+                    TabStop = false,
+                    Font = UiFonts.Serif(11.25f),
+                    AccessibleName = "Chat: " + TabNames[i]
+                };
+                _boxes[i] = box;
+                _views[i] = new ChatView(box, MaxMensajesPorPanel, _theme);
+                _chatHost.Controls.Add(box);
+            }
+            _boxes[0].BringToFront();
+        }
+
+        private void BuildFooter()
+        {
+            _footer = new ThemedPanel { Dock = DockStyle.Bottom, Height = Dpi.S(98), Back = Surface.Raised, TopBorder = Surface.Border };
+
+            _input = new FieldBox { Radius = 10, InsetX = 14 };
+            _input.Input.Font = UiFonts.Serif(11.25f);
+            _input.Input.Hint = "Escribe en español y pulsa Enter";
+            _input.Input.AccessibleName = "Mensaje en español";
+            _input.Input.KeyDown += Input_KeyDown;
+
+            _capsBtn = new FlatButton
+            {
+                Kind = ButtonKind.Field,
+                Glyph = Glyph.Caps,
+                Size = new Size(Dpi.S(44), Dpi.S(44)),
+                AccessibleName = "Enviar en mayúsculas"
+            };
+            _capsBtn.Click += CapsBtn_Click;
+
+            _sendBtn = new FlatButton
+            {
+                Kind = ButtonKind.Accent,
+                Glyph = Glyph.Send,
+                GlyphSize = 19f,
+                GlyphStroke = 2f,
+                Size = new Size(Dpi.S(44), Dpi.S(44)),
+                AccessibleName = "Enviar al juego"
+            };
+            _sendBtn.Click += (s, e) =>
+            {
+                SendCurrent();
+                _input.Input.Focus();
+            };
+
+            _hint = new ThemedLabel { Font = UiFonts.Ui(9f), Tone = Tone.Dim, AutoEllipsis = true };
+
+            _footer.Controls.AddRange(new Control[] { _input, _capsBtn, _sendBtn, _hint });
+            _footer.Resize += (s, e) =>
+            {
+                int w = _footer.ClientSize.Width, pad = Dpi.S(20), top = Dpi.S(14), size = Dpi.S(44), gap = Dpi.S(10);
+                _sendBtn.Location = new Point(w - pad - size, top);
+                _capsBtn.Location = new Point(_sendBtn.Left - gap - size, top);
+                _input.SetBounds(pad, top, Math.Max(40, _capsBtn.Left - gap - pad), size);
+                _hint.SetBounds(pad, top + size + Dpi.S(8), Math.Max(10, w - 2 * pad), Dpi.S(20));
+            };
+        }
+
+        // ======================================================================
+        //  Tema, ajustes y estado
+        // ======================================================================
+
+        private void LoadSettingsIntoUi()
+        {
+            _suppressEvents = true;
+            try
+            {
+                bool deepl = string.Equals(_settings.Proveedor, "DeepL", StringComparison.OrdinalIgnoreCase);
+                _providerSeg.SetSelectedSilently(deepl ? 1 : 0);
+                _keyBox.Input.Text = _settings.DeepLKey ?? "";
+                _translator.DeepLKey = deepl ? _settings.DeepLKey : null;
+                SetDeepLRowsVisible(deepl);
+                SetKeyStatus(string.IsNullOrEmpty(_settings.DeepLKey)
+                    ? "Pega tu clave y pulsa Comprobar. El plan gratuito incluye 500.000 caracteres al mes."
+                    : "Clave guardada.", Tone.Dim);
+                _usageLabel.Text = "Pulsa Comprobar para ver el consumo de este mes.";
+
+                _delaySlider.Value = (int)Math.Round(_settings.RetardoEnvioMs / 500.0);
+                _delayValue.Text = FormatSeconds(_delaySlider.Value * 500);
+
+                _filtrarSistema = _settings.FiltrarSistema;
+                _filterSwitch.Checked = _filtrarSistema;
+                _filterLink.Visible = _filtrarSistema;
+
+                _themeSeg.SetSelectedSilently(Math.Max(0, Themes.IndexOf(_theme)));
+
+                _topSwitch.Checked = _settings.SiempreEncima;
+                TopMost = _settings.SiempreEncima;
+
+                _mayusculas = _settings.Mayusculas;
+                _capsBtn.Checked = _mayusculas;
+            }
+            finally
+            {
+                _suppressEvents = false;
+            }
+        }
+
+        private void ApplyTheme(AppTheme theme)
+        {
+            _theme = theme;
+            BackColor = theme.App;
+            Gfx.ApplyTree(this, theme);
+            _settingsTable.BackColor = theme.Raised;
+            foreach (var view in _views) view.SetTheme(theme);
+            ApplyTitleBar();
+            UpdateStatus();
+            UpdateHint();
+            LayoutHeader();
+            LayoutTabs();
+        }
+
+        // Barra de título del color del tema (Windows 11) u oscura (Windows 10).
+        private void ApplyTitleBar()
+        {
+            if (!IsHandleCreated) return;
+            try
+            {
+                int on = 1;
+                NativeMethods.DwmSetWindowAttribute(Handle, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, sizeof(int));
+                int caption = ToColorRef(_theme.Raised);
+                NativeMethods.DwmSetWindowAttribute(Handle, NativeMethods.DWMWA_CAPTION_COLOR, ref caption, sizeof(int));
+                int text = ToColorRef(_theme.Dim);
+                NativeMethods.DwmSetWindowAttribute(Handle, NativeMethods.DWMWA_TEXT_COLOR, ref text, sizeof(int));
+                int border = ToColorRef(_theme.Border);
+                NativeMethods.DwmSetWindowAttribute(Handle, NativeMethods.DWMWA_BORDER_COLOR, ref border, sizeof(int));
+            }
+            catch { /* Windows antiguo: barra estándar */ }
+        }
+
+        private static int ToColorRef(Color c) => c.R | (c.G << 8) | (c.B << 16);
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ApplyTitleBar();
+        }
+
+        private void ToggleSettings(bool? open = null)
+        {
+            bool show = open ?? !_settingsPanel.Visible;
+            if (show == _settingsPanel.Visible) return;
+            _settingsPanel.Visible = show;
+            _settingsBtn.Checked = show;
+            _settingsBtn.AccessibleName = show ? "Cerrar ajustes" : "Ajustes";
+            if (show)
+            {
+                _settingsTable.PerformLayout();
+                UpdateSettingsHeight();
             }
             else
             {
-                text = deepl ? "DeepL" : "Google Translate";
-                dot = deepl ? Teal : Coral;
+                _input.Input.Focus();
+            }
+        }
+
+        private void SetDeepLRowsVisible(bool visible)
+        {
+            foreach (var c in _deeplRowControls) c.Visible = visible;
+            _settingsTable.PerformLayout();
+            UpdateSettingsHeight();
+        }
+
+        private void SelectTab(int index)
+        {
+            for (int i = 0; i < _tabButtons.Length; i++) _tabButtons[i].Checked = i == index;
+            _boxes[index].BringToFront();
+        }
+
+        private void ScheduleSave()
+        {
+            _saveTimer.Stop();
+            _saveTimer.Start();
+        }
+
+        private void UpdateStatus()
+        {
+            if (_pill == null || _incoming == null) return;
+            bool deepl = _translator.ActiveProvider == Proveedor.DeepL;
+            var cooldown = _translator.CooldownRemaining;
+            int pending = _incoming.Pending;
+
+            bool resized;
+            if (cooldown.TotalSeconds >= 1)
+            {
+                resized = _pill.SetState(Tone.Alert, $"Pausa {Math.Ceiling(cooldown.TotalSeconds)} s", Tone.Warn,
+                    pending > 0 ? $"{pending} en cola" : "", Tone.Dim, warn: true);
+            }
+            else if (!_logFound)
+            {
+                resized = _pill.SetState(Tone.Dim, "Esperando al juego", Tone.Dim, deepl ? "DeepL" : "Google", Tone.Dim, warn: false);
+            }
+            else if (pending >= 3)
+            {
+                resized = _pill.SetState(Tone.Accent, deepl ? "DeepL" : "Google", Tone.Text, $"{pending} en cola", Tone.Dim, warn: false);
+            }
+            else
+            {
+                resized = _pill.SetState(Tone.Ok, deepl ? "DeepL" : "Google Translate", Tone.Text, "", Tone.Dim, warn: false);
+            }
+            if (resized) LayoutHeader();
+        }
+
+        private void UpdateHint()
+        {
+            if (_hint == null) return;
+            int pending = Volatile.Read(ref _outPending);
+            string text;
+            Tone tone;
+
+            if (pending > 0 && _lastOutgoing is string last)
+            {
+                if (_translator.CooldownRemaining.TotalSeconds >= 1)
+                {
+                    var provider = _translator.ActiveProvider == Proveedor.DeepL ? "DeepL" : "Google";
+                    text = $"«{Shorten(last)}» está en cola: se envía en cuanto {provider} vuelva a responder.";
+                    tone = Tone.Warn;
+                }
+                else
+                {
+                    text = pending > 1
+                        ? $"Enviando «{Shorten(last)}» y {pending - 1} más al juego…"
+                        : $"Enviando «{Shorten(last)}» al juego…";
+                    tone = Tone.Accent;
+                }
+            }
+            else
+            {
+                text = _settings.RetardoEnvioMs == 0
+                    ? "Se escribe en el juego en cuanto pulsas Enter."
+                    : $"Se escribe en el juego {FormatSeconds(_settings.RetardoEnvioMs)} después de pulsar Enter.";
+                tone = Tone.Dim;
             }
 
-            if (_titleLabel.Text != text)
-            {
-                _titleLabel.Text = text;
-                LayoutStatusBadge();
-            }
-            if (_statusDot.ForeColor != dot) _statusDot.ForeColor = dot;
+            if (_hint.Text != text) _hint.Text = text;
+            if (_hint.Tone != tone) _hint.Tone = tone;
         }
+
+        private static string Shorten(string s) => s.Length <= 40 ? s : s.Substring(0, 39) + "…";
+
+        private static string FormatSeconds(int ms) => (ms / 1000.0).ToString("0.#", EsNumbers) + " s";
+
+        private static string FormatCount(long n) => n.ToString("#,0", EsNumbers);
 
         private void RestoreWindowBounds()
         {
@@ -510,25 +678,49 @@ namespace TraductorNWN
             _settings.Ventana = new[] { r.X, r.Y, r.Width, r.Height };
         }
 
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            switch (keyData)
+            {
+                case Keys.Control | Keys.D1:
+                    SelectTab(0);
+                    return true;
+                case Keys.Control | Keys.D2:
+                    SelectTab(1);
+                    return true;
+                case Keys.Control | Keys.D3:
+                    SelectTab(2);
+                    return true;
+                case Keys.Escape when _settingsPanel.Visible:
+                    ToggleSettings(false);
+                    return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
         // ======================================================================
         //  Ciclo de vida
         // ======================================================================
 
         private void MainForm_Load(object? sender, EventArgs e)
         {
-            _uiTimer.Tick += UiTimer_Tick;
             _uiTimer.Start();
+            LayoutHeader();
+            LayoutTabs();
 
             var ct = _cts.Token;
             RunBackground(() => _watcher.RunAsync(ct), "lector del log");
             RunBackground(() => _incoming.RunAsync(ct), "traductor");
             RunBackground(() => OutgoingWorkerAsync(ct), "envío al juego");
+
+            if (_translator.DeepLKey is string key) _ = RefreshUsageAsync(key);
         }
 
         private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
             _cts.Cancel();
             _uiTimer.Stop();
+            _saveTimer.Stop();
             _incoming.Complete();
             _outgoing.Writer.TryComplete();
             SaveWindowBounds();
@@ -540,7 +732,7 @@ namespace TraductorNWN
             if (disposing)
             {
                 _uiTimer.Dispose();
-                _toolTip.Dispose();
+                _saveTimer.Dispose();
                 _translator.Dispose();
             }
             base.Dispose(disposing);
@@ -561,7 +753,7 @@ namespace TraductorNWN
                 catch (Exception ex)
                 {
                     ErrorLog.Write(ex);
-                    Notify($"Error interno en el {nombre}: {ex.Message}", Warn);
+                    Notify($"Error interno en el {nombre}: {ex.Message}", Tone.Warn);
                 }
             });
         }
@@ -571,33 +763,22 @@ namespace TraductorNWN
         {
             if (!_display.IsEmpty)
             {
-                List<List<Run>>? ambos = null, ingles = null, espanol = null;
+                var batches = new List<ChatMessage>?[TabNames.Length];
                 int count = 0;
                 while (count < 500 && _display.TryDequeue(out var item))
                 {
                     count++;
-                    switch (item.Target)
-                    {
-                        case ChatTarget.Ingles:
-                            (ingles ??= new List<List<Run>>()).Add(item.Runs);
-                            break;
-                        case ChatTarget.Espanol:
-                            (espanol ??= new List<List<Run>>()).Add(item.Runs);
-                            break;
-                        default:
-                            (ambos ??= new List<List<Run>>()).Add(item.Runs);
-                            break;
-                    }
+                    (batches[(int)item.Target] ??= new List<ChatMessage>()).Add(item.Message);
                 }
-                if (ambos != null) _viewAmbos.AppendMessages(ambos);
-                if (ingles != null) _viewIngles.AppendMessages(ingles);
-                if (espanol != null) _viewEspanol.AppendMessages(espanol);
+                for (int i = 0; i < batches.Length; i++)
+                    if (batches[i] is { } list) _views[i].Append(list);
             }
 
-            if (++_badgeTicks >= 8)
+            if (++_statusTicks >= 8)
             {
-                _badgeTicks = 0;
-                UpdateBadge();
+                _statusTicks = 0;
+                UpdateStatus();
+                UpdateHint();
             }
         }
 
@@ -614,13 +795,90 @@ namespace TraductorNWN
                 try { line = _parser.Parse(raw); }
                 catch { continue; }
                 if (line == null) continue;
+                if (line.Time == null) line = line with { Time = DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) };
 
                 bool translate = line.Kind == LineKind.Chat || !_filtrarSistema;
 
-                // El panel Inglés no espera a nadie: se pinta al instante.
-                Enqueue(ChatTarget.Ingles, BuildOriginal(line, dim: !translate));
+                // La pestaña Inglés no espera a nadie: se pinta al instante.
+                var b = new MessageBuilder();
+                if (line.Kind == LineKind.Chat)
+                {
+                    Header(b, line);
+                    Body(b, line.Text);
+                }
+                else
+                {
+                    SystemLine(b, line.Time, line.Text, translate ? Tone.Text : Tone.Dim);
+                }
+                Enqueue(ChatTarget.Ingles, b.Build());
 
                 if (translate) _incoming.Enqueue(line);
+            }
+        }
+
+        // Llamado desde el hilo del traductor.
+        private void ShowTranslated(ParsedLine line, string translated)
+        {
+            bool same = Same(translated, line.Text);
+
+            if (line.Kind == LineKind.Chat)
+            {
+                if (!ConsumeEcho(line.Text))
+                {
+                    var ambos = new MessageBuilder();
+                    Header(ambos, line);
+                    Body(ambos, translated);
+                    if (!same) ambos.Para(ParaKind.Body).Add(line.Text, Tone.Dim, Face.Original);
+                    Enqueue(ChatTarget.Ambos, ambos.Build());
+                }
+
+                var es = new MessageBuilder();
+                Header(es, line);
+                Body(es, translated);
+                Enqueue(ChatTarget.Espanol, es.Build());
+            }
+            else
+            {
+                var ambos = new MessageBuilder();
+                SystemLine(ambos, line.Time, translated, Tone.Text);
+                if (!same) ambos.Para(ParaKind.Body).Add(line.Text, Tone.Dim, Face.Original);
+                Enqueue(ChatTarget.Ambos, ambos.Build());
+
+                var es = new MessageBuilder();
+                SystemLine(es, line.Time, translated, Tone.Text);
+                Enqueue(ChatTarget.Espanol, es.Build());
+            }
+        }
+
+        // Llamado desde el hilo del traductor cuando no se pudo traducir a tiempo.
+        private void ShowUntranslated(ParsedLine line, string reason)
+        {
+            if (line.Kind == LineKind.Chat)
+            {
+                if (!ConsumeEcho(line.Text))
+                {
+                    var ambos = new MessageBuilder();
+                    Header(ambos, line, untranslated: true);
+                    Body(ambos, line.Text);
+                    ambos.Para(ParaKind.Body).Add(reason, Tone.Dim, Face.Small);
+                    Enqueue(ChatTarget.Ambos, ambos.Build());
+                }
+
+                var es = new MessageBuilder();
+                Header(es, line, untranslated: true);
+                Body(es, line.Text);
+                Enqueue(ChatTarget.Espanol, es.Build());
+            }
+            else
+            {
+                var ambos = new MessageBuilder();
+                SystemLine(ambos, line.Time, line.Text, Tone.Dim);
+                ambos.Add("  ", Tone.Dim, Face.Small).Tag("sin traducir", Tone.TagWarn);
+                Enqueue(ChatTarget.Ambos, ambos.Build());
+
+                var es = new MessageBuilder();
+                SystemLine(es, line.Time, line.Text, Tone.Dim);
+                Enqueue(ChatTarget.Espanol, es.Build());
             }
         }
 
@@ -628,109 +886,192 @@ namespace TraductorNWN
         //  Salida: lo que escribe el usuario → inglés → juego
         // ======================================================================
 
-        private void InputBox_KeyDown(object? sender, KeyEventArgs e)
+        private void Input_KeyDown(object? sender, KeyEventArgs e)
         {
             if (e.KeyCode != Keys.Enter) return;
             e.SuppressKeyPress = true;
+            SendCurrent();
+        }
 
-            var textEs = _inputBox.Text.Trim();
+        private void SendCurrent()
+        {
+            var textEs = _input.Input.Text.Trim();
             if (textEs.Length == 0) return;
-            _inputBox.Clear();
+            _input.Input.Clear();
 
-            // No se traduce aquí: la UI nunca se congela esperando a la red.
+            // No se traduce aquí: la ventana nunca se congela esperando a la red.
+            Interlocked.Increment(ref _outPending);
+            _lastOutgoing = textEs;
             _outgoing.Writer.TryWrite(textEs);
+            UpdateHint();
         }
 
         private async Task OutgoingWorkerAsync(CancellationToken ct)
         {
             await foreach (var textEs in _outgoing.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                string textEn;
                 try
                 {
-                    textEn = await _translator.TranslateOneWithRetryAsync(textEs, "es", "en", TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+                    string textEn;
+                    try
+                    {
+                        textEn = await _translator.TranslateOneWithRetryAsync(textEs, "es", "en", TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        Notify($"No se pudo traducir «{Shorten(textEs)}»: {ex.Message}", Tone.Warn);
+                        continue;
+                    }
+
+                    if (_mayusculas) textEn = textEn.ToUpperInvariant();
+
+                    // Cuando el juego escriba el mensaje en el log se mostrará tu español original sin otra petición.
+                    _translator.Remember(textEn, textEs, "en", "es");
+
+                    await Task.Delay(_settings.RetardoEnvioMs, ct).ConfigureAwait(false);
+
+                    string? error;
+                    try { error = GameSender.Send(textEn); }
+                    catch (Exception ex) { error = "Error al enviar al juego: " + ex.Message; }
+
+                    if (error == null) RememberSent(textEn);
+                    Enqueue(ChatTarget.Ambos, BuildOwn(textEn, textEs, sent: error == null));
+                    if (error != null) Notify(error, Tone.Warn);
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                finally
                 {
-                    break;
+                    Interlocked.Decrement(ref _outPending);
                 }
-                catch (Exception ex)
-                {
-                    Notify($"No se pudo traducir tu mensaje «{textEs}»: {ex.Message}", Warn);
-                    continue;
-                }
-
-                if (_mayusculasActivas) textEn = textEn.ToUpperInvariant();
-
-                // Cuando el juego escriba nuestro propio mensaje en el log, se mostrará el
-                // texto original en español sin gastar otra petición.
-                _translator.Remember(textEn, textEs, "en", "es");
-
-                var runs = new List<Run> { new("→ Enviando: " + textEn, Coral) };
-                if (!string.Equals(textEn.Trim(), textEs, StringComparison.OrdinalIgnoreCase))
-                    runs.Add(new Run("\n  ES  " + textEs, TextDim));
-                Enqueue(ChatTarget.Ambos, runs);
-
-                // Margen antes de escribir en el juego (configurable en config.json).
-                await Task.Delay(_settings.RetardoEnvioMs, ct).ConfigureAwait(false);
-
-                string? error;
-                try { error = GameSender.Send(textEn); }
-                catch (Exception ex) { error = "Error al enviar al juego: " + ex.Message; }
-                if (error != null) Notify(error, Warn);
             }
         }
 
-        // ======================================================================
-        //  Botones
-        // ======================================================================
-
-        private void MayusBtn_Click(object? sender, EventArgs e)
+        private void RememberSent(string textEn)
         {
-            _mayusculasActivas = !_mayusculasActivas;
-            PaintToggle(_mayusBtnFrame, _mayusBtn, _mayusculasActivas);
-            _settings.Mayusculas = _mayusculasActivas;
-            _settings.Save();
+            long now = Environment.TickCount64;
+            lock (_recentSent)
+            {
+                _recentSent.RemoveAll(x => now - x.At > 60_000);
+                _recentSent.Add((Normalize(textEn), now));
+            }
         }
 
-        private void FiltroBtn_Click(object? sender, EventArgs e)
+        private bool ConsumeEcho(string text)
         {
-            _filtrarSistema = !_filtrarSistema;
-            PaintToggle(_filtroBtnFrame, _filtroBtn, _filtrarSistema);
+            var key = Normalize(text);
+            long now = Environment.TickCount64;
+            lock (_recentSent)
+            {
+                _recentSent.RemoveAll(x => now - x.At > 60_000);
+                int i = _recentSent.FindIndex(x => x.Text == key);
+                if (i < 0) return false;
+                _recentSent.RemoveAt(i);
+                return true;
+            }
+        }
+
+        private static string Normalize(string s) => Spaces.Replace(s.Trim(), " ").ToUpperInvariant();
+
+        // ======================================================================
+        //  Botones y ajustes
+        // ======================================================================
+
+        private void CapsBtn_Click(object? sender, EventArgs e)
+        {
+            _mayusculas = !_mayusculas;
+            _capsBtn.Checked = _mayusculas;
+            _settings.Mayusculas = _mayusculas;
+            ScheduleSave();
+        }
+
+        private void FilterSwitch_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            _filtrarSistema = _filterSwitch.Checked;
+            _filterLink.Visible = _filtrarSistema;
             _settings.FiltrarSistema = _filtrarSistema;
-            _settings.Save();
-            Notify(_filtrarSistema
-                ? "Solo se traduce el chat de jugadores (combate y sistema, sin traducir, en la pestaña Inglés)."
-                : "Se traducen también los mensajes de combate y del sistema.", TextDim);
+            ScheduleSave();
         }
 
-        private async void DeeplBtn_Click(object? sender, EventArgs e)
+        private void TopSwitch_CheckedChanged(object? sender, EventArgs e)
         {
-            var key = _deeplKeyBox.Text.Trim();
-            if (key.Length == 0)
+            if (_suppressEvents) return;
+            TopMost = _topSwitch.Checked;
+            _settings.SiempreEncima = _topSwitch.Checked;
+            ScheduleSave();
+        }
+
+        private void ThemeSeg_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            var theme = Themes.All[_themeSeg.SelectedIndex];
+            _settings.Tema = theme.Id;
+            ApplyTheme(theme);
+            ScheduleSave();
+        }
+
+        private void DelaySlider_ValueChanged(object? sender, EventArgs e)
+        {
+            int ms = _delaySlider.Value * 500;
+            _delayValue.Text = FormatSeconds(ms);
+            if (_suppressEvents) return;
+            _settings.RetardoEnvioMs = ms;
+            UpdateHint();
+            ScheduleSave();
+        }
+
+        private void ProviderSeg_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            bool deepl = _providerSeg.SelectedIndex == 1;
+            _settings.Proveedor = deepl ? "DeepL" : "Google";
+            SetDeepLRowsVisible(deepl);
+
+            if (!deepl)
             {
                 _translator.DeepLKey = null;
-                _settings.DeepLKey = null;
-                _settings.Save();
-                Notify("Volviendo a Google Translate.", TextDim);
-                UpdateBadge();
+            }
+            else if (!string.IsNullOrEmpty(_settings.DeepLKey))
+            {
+                _translator.DeepLKey = _settings.DeepLKey;
+            }
+            else
+            {
+                _keyBox.Input.Focus();
+                SetKeyStatus("Pega tu clave y pulsa Comprobar. Mientras tanto se sigue usando Google.", Tone.Dim);
+            }
+
+            ScheduleSave();
+            UpdateStatus();
+        }
+
+        private async void CheckKey_Click(object? sender, EventArgs e)
+        {
+            var key = _keyBox.Input.Text.Trim();
+            if (key.Length == 0)
+            {
+                SetKeyStatus("Pega tu clave de DeepL y pulsa Comprobar.", Tone.Warn);
                 return;
             }
 
-            var oldText = _deeplBtn.Text;
-            _deeplBtn.Enabled = false;
-            _deeplBtn.Text = "PROBANDO…";
+            _checkBtn.Enabled = false;
+            _checkBtn.Text = "Comprobando…";
+            SetKeyStatus("Comprobando la clave…", Tone.Dim);
             try
             {
                 var usage = await _translator.CheckDeepLKeyAsync(key, _cts.Token);
                 ApplyDeepLKey(key);
-                Notify(usage.Limit > 0
-                    ? $"DeepL conectado · {usage.Count:N0} de {usage.Limit:N0} caracteres usados este mes."
-                    : "DeepL conectado.", Teal);
+                SetKeyStatus(key.EndsWith(":fx", StringComparison.OrdinalIgnoreCase)
+                    ? "✓ Clave válida, plan gratuito"
+                    : "✓ Clave válida, plan Pro", Tone.Ok);
+                ShowUsage(usage);
             }
             catch (DeepLUnavailableException ex)
             {
-                Notify("DeepL rechazó la clave: " + ex.Message + ". Se sigue usando el proveedor anterior.", Warn);
+                SetKeyStatus("DeepL rechazó la clave: " + ex.Message + ". Se sigue usando el traductor anterior.", Tone.Warn);
             }
             catch (OperationCanceledException)
             {
@@ -740,125 +1081,143 @@ namespace TraductorNWN
             {
                 // Sin conexión para comprobarla: se guarda igualmente.
                 ApplyDeepLKey(key);
-                Notify("No se pudo comprobar la clave (" + ex.Message + "). Se usará igualmente.", TextDim);
+                SetKeyStatus("No se pudo comprobar (" + ex.Message + "). Se usará igualmente.", Tone.Dim);
             }
             finally
             {
                 if (!IsDisposed)
                 {
-                    _deeplBtn.Text = oldText;
-                    _deeplBtn.Enabled = true;
-                    UpdateBadge();
+                    _checkBtn.Text = "Comprobar";
+                    _checkBtn.Enabled = true;
+                    UpdateStatus();
                 }
+            }
+        }
+
+        private async Task RefreshUsageAsync(string key)
+        {
+            try
+            {
+                ShowUsage(await _translator.CheckDeepLKeyAsync(key, _cts.Token));
+            }
+            catch (DeepLUnavailableException ex)
+            {
+                SetKeyStatus("DeepL no acepta la clave guardada: " + ex.Message + ".", Tone.Warn);
+            }
+            catch
+            {
+                // sin conexión al arrancar: se verá al pulsar Comprobar
             }
         }
 
         private void ApplyDeepLKey(string key)
         {
-            _translator.DeepLKey = key;
             _settings.DeepLKey = key;
+            _settings.Proveedor = "DeepL";
+            _translator.DeepLKey = key;
+            _providerSeg.SetSelectedSilently(1);
             _settings.Save();
         }
 
-        // ======================================================================
-        //  Construcción de mensajes para los paneles
-        // ======================================================================
-
-        private void Enqueue(ChatTarget target, List<Run> runs) => _display.Enqueue(new DisplayItem(target, runs));
-
-        private void Notify(string text, Color color) =>
-            Enqueue(ChatTarget.Ambos, new List<Run> { new("[Sistema]: " + text, color) });
-
-        private static List<Run> BuildOriginal(ParsedLine line, bool dim)
+        private void SetKeyStatus(string text, Tone tone)
         {
-            var runs = new List<Run>(6);
-            if (line.Kind == LineKind.Chat)
+            _keyStatus.Text = text;
+            _keyStatus.Tone = tone;
+        }
+
+        private void ShowUsage(DeepLUsage usage)
+        {
+            if (IsDisposed) return;
+            if (usage.Limit > 0)
             {
-                AddSpeaker(runs, line);
-                AddMessageParts(runs, line.Text, TextMain);
+                _usageBar.Value = (double)usage.Count / usage.Limit;
+                _usageLabel.Text = $"{FormatCount(usage.Count)} de {FormatCount(usage.Limit)} caracteres";
+                _usageLabel.Tone = usage.Count >= usage.Limit * 0.9 ? Tone.Warn : Tone.Text;
             }
             else
             {
-                AddMessageParts(runs, line.Text, dim ? TextDim : TextMain);
+                _usageBar.Value = 0;
+                _usageLabel.Text = "DeepL no ha indicado el consumo.";
+                _usageLabel.Tone = Tone.Dim;
             }
-            return runs;
         }
 
-        private void ShowTranslated(ParsedLine line, string translated)
+        // ======================================================================
+        //  Construcción de mensajes
+        // ======================================================================
+
+        private void Enqueue(ChatTarget target, ChatMessage message) => _display.Enqueue((target, message));
+
+        private void Notify(string text, Tone tone) =>
+            Enqueue(ChatTarget.Ambos, new MessageBuilder().Para(ParaKind.Notice).Add(text, tone, Face.Small).Build());
+
+        private static bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        // "14:31  Kael Ironfist  [grupo]"
+        private static void Header(MessageBuilder b, ParsedLine line, bool untranslated = false)
         {
-            bool same = string.Equals(translated.Trim(), line.Text.Trim(), StringComparison.OrdinalIgnoreCase);
-
-            if (line.Kind == LineKind.Chat)
-            {
-                // Ambos: nombre + traducción, y debajo el original (si cambia algo).
-                var ambos = new List<Run>(8);
-                AddSpeaker(ambos, line);
-                AddMessageParts(ambos, translated, TextMain);
-                if (!same) ambos.Add(new Run("\n  EN  " + line.Text, TextDim));
-                Enqueue(ChatTarget.Ambos, ambos);
-
-                var es = new List<Run>(6);
-                AddSpeaker(es, line);
-                AddMessageParts(es, translated, TextMain);
-                Enqueue(ChatTarget.Espanol, es);
-            }
-            else
-            {
-                var ambos = new List<Run>(6);
-                AddMessageParts(ambos, translated, TextMain);
-                if (!same) ambos.Add(new Run("\n(" + line.Text + ")", TextDim));
-                Enqueue(ChatTarget.Ambos, ambos);
-
-                var es = new List<Run>(4);
-                AddMessageParts(es, translated, TextMain);
-                Enqueue(ChatTarget.Espanol, es);
-            }
+            b.Para(ParaKind.Header)
+             .Add((line.Time ?? "") + "\t", Tone.Dim, Face.Small)
+             .Add(line.Speaker ?? "?", Tone.Accent, Face.Name);
+            if (ChannelTag(line.Channel) is { } tag) b.Add("  ", Tone.Dim, Face.Small).Tag(tag.Label, tag.Tone);
+            if (untranslated) b.Add("  ", Tone.Dim, Face.Small).Tag("sin traducir", Tone.TagWarn);
         }
 
-        private void ShowUntranslated(ParsedLine line, string motivo)
+        private static void Body(MessageBuilder b, string text)
         {
-            bool chat = line.Kind == LineKind.Chat;
-
-            var ambos = new List<Run>(8);
-            if (chat) AddSpeaker(ambos, line);
-            AddMessageParts(ambos, line.Text, chat ? TextMain : TextDim);
-            ambos.Add(new Run("\n  ⚠ sin traducir · " + motivo, TextDim));
-            Enqueue(ChatTarget.Ambos, ambos);
-
-            var es = new List<Run>(6);
-            if (chat) AddSpeaker(es, line);
-            AddMessageParts(es, line.Text, TextDim);
-            Enqueue(ChatTarget.Espanol, es);
+            b.Para(ParaKind.Body);
+            AddMessageParts(b, text, Tone.Text);
         }
 
-        // "14:35  [Privado] Nombre:  "
-        private static void AddSpeaker(List<Run> runs, ParsedLine line)
+        // Combate y avisos del servidor: "14:35  texto", más pequeño.
+        private static void SystemLine(MessageBuilder b, string? time, string text, Tone tone)
         {
-            if (!string.IsNullOrEmpty(line.Time))
-                runs.Add(new Run(line.Time + "  ", TextDim));
-
-            if (!string.IsNullOrEmpty(line.Channel) && !line.Channel.Equals("Talk", StringComparison.OrdinalIgnoreCase))
-            {
-                var canal = NombresCanal.TryGetValue(line.Channel, out var es) ? es : line.Channel;
-                runs.Add(new Run("[" + canal + "] ", Coral, FontStyle.Bold));
-            }
-
-            runs.Add(new Run((line.Speaker ?? "?") + ":  ", Teal, FontStyle.Bold));
+            b.Para(ParaKind.Header)
+             .Add((time ?? "") + "\t", Tone.Dim, Face.Small)
+             .Add(text, tone, Face.Original);
         }
 
-        // Separa el mensaje en texto normal y *acciones/emotes*, cada uno con su estilo.
-        private static void AddMessageParts(List<Run> runs, string message, Color baseColor)
+        // Tus mensajes, alineados a la derecha.
+        private static ChatMessage BuildOwn(string textEn, string textEs, bool sent)
+        {
+            var b = new MessageBuilder().Para(ParaKind.Own);
+            if (sent) b.Add("✓ enviado", Tone.Ok, Face.Small);
+            else b.Add("no enviado", Tone.Warn, Face.Small);
+            b.Add("   " + DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) + "   ", Tone.Dim, Face.Small)
+             .Add("Tú", Tone.Text, Face.Name);
+
+            b.Para(ParaKind.Own);
+            AddMessageParts(b, textEn, Tone.Text);
+            if (!Same(textEn, textEs)) b.Para(ParaKind.Own).Add(textEs, Tone.Dim, Face.Original);
+            return b.Build();
+        }
+
+        private static (string Label, Tone Tone)? ChannelTag(string? channel)
+        {
+            if (string.IsNullOrEmpty(channel) || channel.Equals("Talk", StringComparison.OrdinalIgnoreCase)) return null;
+            return channel.ToLowerInvariant() switch
+            {
+                "tell" => ("privado", Tone.TagPrivate),
+                "whisper" => ("susurro", Tone.TagPrivate),
+                "party" => ("grupo", Tone.TagParty),
+                "shout" => ("grito", Tone.TagShout),
+                "dm" => ("DM", Tone.TagDm),
+                "server" => ("servidor", Tone.TagOther),
+                _ => (channel.ToLowerInvariant(), Tone.TagOther)
+            };
+        }
+
+        // Separa el mensaje en texto normal y *acciones*, que se muestran en cursiva y en otro color.
+        private static void AddMessageParts(MessageBuilder b, string message, Tone tone)
         {
             int last = 0;
             foreach (Match m in EmoteRegex.Matches(message))
             {
-                if (m.Index > last)
-                    runs.Add(new Run(message.Substring(last, m.Index - last), baseColor));
-                runs.Add(new Run("✦ " + m.Groups[1].Value.Trim() + " ✦", Coral, FontStyle.Bold | FontStyle.Italic));
+                if (m.Index > last) b.Add(message.Substring(last, m.Index - last), tone, Face.Body);
+                b.Add(m.Groups[1].Value.Trim(), Tone.Emote, Face.BodyItalic);
                 last = m.Index + m.Length;
             }
-            if (last < message.Length)
-                runs.Add(new Run(message.Substring(last), baseColor));
+            if (last < message.Length) b.Add(message.Substring(last), tone, Face.Body);
         }
     }
 }
