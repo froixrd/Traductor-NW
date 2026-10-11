@@ -48,6 +48,35 @@ namespace TraductorNWN
 
         internal const int SW_RESTORE = 9;
 
+        // ---------- Tecla rápida global y parpadeo en la barra de tareas ----------
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll")]
+        internal static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        internal const int WM_HOTKEY = 0x0312;
+        internal const uint MOD_CONTROL = 0x0002;
+        internal const uint MOD_SHIFT = 0x0004;
+        internal const uint MOD_NOREPEAT = 0x4000;
+        internal const uint VK_SPACE = 0x20;
+
+        [DllImport("user32.dll")]
+        internal static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FLASHWINFO
+        {
+            public uint cbSize;
+            public IntPtr hwnd;
+            public uint dwFlags;
+            public uint uCount;
+            public uint dwTimeout;
+        }
+
+        internal const uint FLASHW_ALL = 0x3;
+        internal const uint FLASHW_TIMERNOFG = 0xC;
+
         // ---------- Teclado simulado ----------
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);

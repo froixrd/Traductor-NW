@@ -42,6 +42,14 @@ namespace TraductorNWN
 
         private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 60 };
         private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 700 };
+        private readonly System.Windows.Forms.Timer _glossaryTimer = new() { Interval = 800 };
+        private readonly System.Windows.Forms.Timer _opacityPreviewTimer = new() { Interval = 1000 };
+
+        // Tecla rápida global (Ctrl+Mayús+Espacio).
+        private const int HotkeyId = 0x4E57;
+        private bool _hotkeyRegistered;
+        private IntPtr _hotkeyReturnTo;   // ventana desde la que se llamó con la tecla rápida (el juego)
+        private long _lastAlertAt;
 
         private AppTheme _theme;
         private volatile bool _mayusculas;
@@ -75,7 +83,17 @@ namespace TraductorNWN
         private ToggleSwitch _filterSwitch = null!;
         private ToggleSwitch _topSwitch = null!;
         private ToggleSwitch _returnSwitch = null!;
-        private Control[] _deeplRowControls = Array.Empty<Control>();
+        private ToggleSwitch _hotkeySwitch = null!;
+        private ToggleSwitch _alertSwitch = null!;
+        private ToggleSwitch _compactSwitch = null!;
+        private Slider _opacitySlider = null!;
+        private ThemedLabel _opacityValue = null!;
+        private ThemedLabel _keyLabel = null!;
+        private ThemedPanel _keyCell = null!;
+        private FieldBox _regionBox = null!;
+        private ThemedLabel _usageRowLabel = null!;
+        private ThemedPanel _usageCell = null!;
+        private FieldBox _glossaryBox = null!;
 
         private ThemedPanel _tabRow = null!;
         private FlatButton[] _tabButtons = Array.Empty<FlatButton>();
@@ -141,6 +159,25 @@ namespace TraductorNWN
                 _settings.Save();
             };
 
+            _glossaryTimer.Tick += (s, e) => ApplyGlossary();
+            _opacityPreviewTimer.Tick += (s, e) =>
+            {
+                _opacityPreviewTimer.Stop();
+                if (ActiveForm == this) Opacity = 1.0;
+            };
+
+            // Transparencia solo mientras no estás usando el traductor.
+            Activated += (s, e) =>
+            {
+                if (Opacity < 1.0) Opacity = 1.0;
+            };
+            Deactivate += (s, e) =>
+            {
+                _hotkeyReturnTo = IntPtr.Zero;
+                if (_settings.OpacidadInactiva < 100) Opacity = _settings.OpacidadInactiva / 100.0;
+            };
+            Resize += (s, e) => LayoutSettings();
+
             Load += MainForm_Load;
             Shown += (s, e) => _input.Input.Focus();
             FormClosing += MainForm_FormClosing;
@@ -198,69 +235,92 @@ namespace TraductorNWN
                 Back = Surface.Raised,
                 BottomBorder = Surface.Border,
                 Visible = false,
+                AutoScroll = true,
                 Padding = new Padding(Dpi.S(20), Dpi.S(18), Dpi.S(20), Dpi.S(19))
+            };
+            _settingsPanel.HandleCreated += (s, e) =>
+            {
+                try { NativeMethods.SetWindowTheme(_settingsPanel.Handle, "DarkMode_Explorer", null); }
+                catch { /* Windows antiguo: barra clara */ }
             };
 
             _settingsTable = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                AutoSize = false,
                 ColumnCount = 2,
                 Margin = Padding.Empty,
-                Padding = Padding.Empty
+                Padding = Padding.Empty,
+                Location = new Point(Dpi.S(20), Dpi.S(18))
             };
             _settingsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Dpi.S(170)));
             _settingsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            _settingsTable.SizeChanged += (s, e) => UpdateSettingsHeight();
 
             // --- Traductor ---
             _providerSeg = new SegmentedControl { Anchor = AnchorStyles.Left | AnchorStyles.Top };
             _providerSeg.AddOption("Google Translate");
             _providerSeg.AddOption("DeepL");
+            _providerSeg.AddOption("Microsoft");
             _providerSeg.SelectedIndexChanged += ProviderSeg_SelectedIndexChanged;
             AddSettingsRow("Traductor", _providerSeg, _providerSeg.Height);
 
-            // --- Clave de DeepL ---
-            var keyCell = NewCell(Dpi.S(66));
+            // --- Clave (DeepL o Microsoft) ---
+            _keyCell = NewCell(Dpi.S(66));
             _keyBox = new FieldBox { Radius = 8, InsetX = 12 };
             _keyBox.Input.UseSystemPasswordChar = true;
             _keyBox.Input.Font = UiFonts.Ui(10.5f);
-            _keyBox.Input.Hint = "Pega aquí tu clave de DeepL";
-            _keyBox.Input.AccessibleName = "Clave de DeepL";
-            _keyBox.Input.KeyDown += (s, e) =>
-            {
-                if (e.KeyCode != Keys.Enter) return;
-                e.SuppressKeyPress = true;
-                if (_checkBtn.Enabled) CheckKey_Click(_checkBtn, EventArgs.Empty);
-            };
+            _keyBox.Input.KeyDown += KeyField_KeyDown;
+            _regionBox = new FieldBox { Radius = 8, InsetX = 10 };
+            _regionBox.Input.Font = UiFonts.Ui(10.5f);
+            _regionBox.Input.Hint = "Región";
+            _regionBox.Input.AccessibleName = "Región del recurso de Microsoft Translator (vacío si es global)";
+            _regionBox.Input.KeyDown += KeyField_KeyDown;
             _checkBtn = new FlatButton { Kind = ButtonKind.Outline, Text = "Comprobar" };
             _checkBtn.Click += CheckKey_Click;
             _keyStatus = new ThemedLabel { Font = UiFonts.Ui(9f), Tone = Tone.Dim, AutoEllipsis = true };
-            keyCell.Controls.AddRange(new Control[] { _keyBox, _checkBtn, _keyStatus });
-            keyCell.Resize += (s, e) =>
-            {
-                int w = keyCell.ClientSize.Width;
-                int bw = Gfx.Measure("Comprobando…", UiFonts.UiStrong(9.75f)).Width + Dpi.S(32);
-                _checkBtn.SetBounds(w - bw, 0, bw, Dpi.S(40));
-                _keyBox.SetBounds(0, 0, Math.Max(40, w - bw - Dpi.S(10)), Dpi.S(40));
-                _keyStatus.SetBounds(0, Dpi.S(46), w, Dpi.S(20));
-            };
-            var keyLabel = AddSettingsRow("Clave de DeepL", keyCell, Dpi.S(40));
+            _keyCell.Controls.AddRange(new Control[] { _keyBox, _regionBox, _checkBtn, _keyStatus });
+            _keyCell.Resize += (s, e) => LayoutKeyCell();
+            _keyLabel = AddSettingsRow("Clave", _keyCell, Dpi.S(40));
 
-            // --- Uso este mes ---
-            var usageCell = NewCell(Dpi.S(38));
+            // --- Uso este mes (DeepL) ---
+            _usageCell = NewCell(Dpi.S(38));
             _usageBar = new ThinProgress { AccessibleName = "Caracteres de DeepL usados este mes" };
             _usageLabel = new ThemedLabel { Font = UiFonts.Ui(9f), Tone = Tone.Dim, AutoEllipsis = true };
-            usageCell.Controls.AddRange(new Control[] { _usageBar, _usageLabel });
-            usageCell.Resize += (s, e) =>
+            _usageCell.Controls.AddRange(new Control[] { _usageBar, _usageLabel });
+            _usageCell.Resize += (s, e) =>
             {
-                int w = usageCell.ClientSize.Width;
+                int w = _usageCell.ClientSize.Width;
                 _usageBar.SetBounds(0, Dpi.S(5), w, Dpi.S(8));
                 _usageLabel.SetBounds(0, Dpi.S(17), w, Dpi.S(20));
             };
-            var usageLabel = AddSettingsRow("Uso este mes", usageCell, Dpi.S(18));
-            _deeplRowControls = new Control[] { keyLabel, keyCell, usageLabel, usageCell };
+            _usageRowLabel = AddSettingsRow("Uso este mes", _usageCell, Dpi.S(18));
+
+            // --- Palabras que no se traducen ---
+            var glossaryCell = NewCell(Dpi.S(64));
+            _glossaryBox = new FieldBox { Radius = 8, InsetX = 12 };
+            _glossaryBox.Input.Font = UiFonts.Ui(10.5f);
+            _glossaryBox.Input.Hint = "Seraphine, Kael, Aguas Profundas";
+            _glossaryBox.Input.AccessibleName = "Palabras que no se traducen, separadas por comas";
+            _glossaryBox.Input.TextChanged += (s, e) =>
+            {
+                if (_suppressEvents) return;
+                _glossaryTimer.Stop();
+                _glossaryTimer.Start();
+            };
+            var glossaryDesc = new ThemedLabel
+            {
+                Text = "Nombres, lugares o jerga del servidor, separados por comas. Se quedan tal cual.",
+                Font = UiFonts.Ui(9f),
+                Tone = Tone.Dim,
+                AutoEllipsis = true
+            };
+            glossaryCell.Controls.AddRange(new Control[] { _glossaryBox, glossaryDesc });
+            glossaryCell.Resize += (s, e) =>
+            {
+                int w = glossaryCell.ClientSize.Width;
+                _glossaryBox.SetBounds(0, 0, w, Dpi.S(40));
+                glossaryDesc.SetBounds(0, Dpi.S(44), w, Dpi.S(20));
+            };
+            AddSettingsRow("No traducir", glossaryCell, Dpi.S(40));
 
             // --- Espera antes de enviar ---
             var delayCell = NewCell(Dpi.S(28));
@@ -275,6 +335,10 @@ namespace TraductorNWN
                 _delaySlider.SetBounds(0, 0, Math.Max(40, w - Dpi.S(60)), Dpi.S(28));
             };
             AddSettingsRow("Esperar antes de enviar", delayCell, Dpi.S(28));
+
+            // --- Después de enviar / tecla rápida ---
+            _returnSwitch = AddSwitchRow("Después de enviar", "Volver al traductor para seguir escribiendo", ReturnSwitch_CheckedChanged);
+            _hotkeySwitch = AddSwitchRow("Tecla rápida", "Ctrl+Mayús+Espacio salta entre el juego y el traductor", HotkeySwitch_CheckedChanged);
 
             // --- Qué se traduce ---
             var filterCell = NewCell(Dpi.S(62));
@@ -298,41 +362,92 @@ namespace TraductorNWN
             };
             AddSettingsRow("Qué se traduce", filterCell, Dpi.S(26));
 
+            // --- Mensajes privados ---
+            _alertSwitch = AddSwitchRow("Mensajes privados", "Avisar con un sonido y haciendo parpadear la ventana", AlertSwitch_CheckedChanged);
+
             // --- Colores ---
             _themeSeg = new SegmentedControl { Anchor = AnchorStyles.Left | AnchorStyles.Top };
             foreach (var theme in Themes.All) _themeSeg.AddOption(theme.Name, theme.Accent);
             _themeSeg.SelectedIndexChanged += ThemeSeg_SelectedIndexChanged;
             AddSettingsRow("Colores", _themeSeg, _themeSeg.Height);
 
-            // --- Después de enviar ---
-            var returnCell = NewCell(Dpi.S(26));
-            _returnSwitch = new ToggleSwitch { AccessibleName = "Volver al traductor después de enviar" };
-            _returnSwitch.CheckedChanged += ReturnSwitch_CheckedChanged;
-            var returnLabel = new ThemedLabel { Text = "Volver al traductor para seguir escribiendo", Font = UiFonts.Ui(10f), Tone = Tone.Text };
-            returnCell.Controls.AddRange(new Control[] { _returnSwitch, returnLabel });
-            returnCell.Resize += (s, e) =>
-            {
-                _returnSwitch.Location = Point.Empty;
-                returnLabel.SetBounds(Dpi.S(56), 0, Math.Max(10, returnCell.ClientSize.Width - Dpi.S(56)), Dpi.S(26));
-            };
-            AddSettingsRow("Después de enviar", returnCell, Dpi.S(26));
-
-            // --- Ventana ---
+            // --- Ventana: siempre encima y compacta ---
             var windowCell = NewCell(Dpi.S(26));
             _topSwitch = new ToggleSwitch { AccessibleName = "Mantener la ventana siempre encima del juego" };
             _topSwitch.CheckedChanged += TopSwitch_CheckedChanged;
-            var topLabel = new ThemedLabel { Text = "Siempre encima del juego", Font = UiFonts.Ui(10f), Tone = Tone.Text };
-            windowCell.Controls.AddRange(new Control[] { _topSwitch, topLabel });
+            var topLabel = new ThemedLabel { Text = "Siempre encima", Font = UiFonts.Ui(10f), Tone = Tone.Text, AutoEllipsis = true };
+            _compactSwitch = new ToggleSwitch { AccessibleName = "Ventana compacta: sin título, pestañas ni ayuda" };
+            _compactSwitch.CheckedChanged += CompactSwitch_CheckedChanged;
+            var compactLabel = new ThemedLabel { Text = "Compacta", Font = UiFonts.Ui(10f), Tone = Tone.Text, AutoEllipsis = true };
+            windowCell.Controls.AddRange(new Control[] { _topSwitch, topLabel, _compactSwitch, compactLabel });
             windowCell.Resize += (s, e) =>
             {
+                int w = windowCell.ClientSize.Width, x = Dpi.S(56);
+                int half = Math.Max(Dpi.S(200), w / 2);
                 _topSwitch.Location = Point.Empty;
-                topLabel.SetBounds(Dpi.S(56), 0, Math.Max(10, windowCell.ClientSize.Width - Dpi.S(56)), Dpi.S(26));
+                topLabel.SetBounds(x, 0, Math.Max(10, half - x - Dpi.S(8)), Dpi.S(26));
+                _compactSwitch.Location = new Point(half, 0);
+                compactLabel.SetBounds(half + x, 0, Math.Max(10, w - half - x), Dpi.S(26));
             };
-            var lastLabel = AddSettingsRow("Ventana", windowCell, Dpi.S(26));
+            AddSettingsRow("Ventana", windowCell, Dpi.S(26));
+
+            // --- Transparencia sin foco ---
+            var opacityCell = NewCell(Dpi.S(48));
+            _opacitySlider = new Slider { Minimum = 4, Maximum = 10, AccessibleName = "Opacidad de la ventana cuando no la estás usando" };
+            _opacitySlider.ValueChanged += OpacitySlider_ValueChanged;
+            _opacityValue = new ThemedLabel { Font = UiFonts.Ui(9.75f), Tone = Tone.Text, TextAlign = ContentAlignment.MiddleRight };
+            var opacityDesc = new ThemedLabel
+            {
+                Text = "Cuando no estás usando el traductor, para ver el juego a través.",
+                Font = UiFonts.Ui(9f),
+                Tone = Tone.Dim,
+                AutoEllipsis = true
+            };
+            opacityCell.Controls.AddRange(new Control[] { _opacitySlider, _opacityValue, opacityDesc });
+            opacityCell.Resize += (s, e) =>
+            {
+                int w = opacityCell.ClientSize.Width;
+                _opacityValue.SetBounds(w - Dpi.S(52), 0, Dpi.S(52), Dpi.S(28));
+                _opacitySlider.SetBounds(0, 0, Math.Max(40, w - Dpi.S(60)), Dpi.S(28));
+                opacityDesc.SetBounds(0, Dpi.S(28), w, Dpi.S(20));
+            };
+            var lastLabel = AddSettingsRow("Transparencia", opacityCell, Dpi.S(28));
             lastLabel.Margin = new Padding(0, 0, Dpi.S(12), 0);
-            windowCell.Margin = Padding.Empty;
+            opacityCell.Margin = Padding.Empty;
 
             _settingsPanel.Controls.Add(_settingsTable);
+        }
+
+        private ToggleSwitch AddSwitchRow(string label, string text, EventHandler onChanged)
+        {
+            var cell = NewCell(Dpi.S(26));
+            var toggle = new ToggleSwitch { AccessibleName = text };
+            toggle.CheckedChanged += onChanged;
+            var caption = new ThemedLabel { Text = text, Font = UiFonts.Ui(10f), Tone = Tone.Text, AutoEllipsis = true };
+            cell.Controls.AddRange(new Control[] { toggle, caption });
+            cell.Resize += (s, e) =>
+            {
+                toggle.Location = Point.Empty;
+                caption.SetBounds(Dpi.S(56), 0, Math.Max(10, cell.ClientSize.Width - Dpi.S(56)), Dpi.S(26));
+            };
+            AddSettingsRow(label, cell, Dpi.S(26));
+            return toggle;
+        }
+
+        private void LayoutKeyCell()
+        {
+            int w = _keyCell.ClientSize.Width, gap = Dpi.S(10), h = Dpi.S(40);
+            int bw = Gfx.Measure("Comprobando…", UiFonts.UiStrong(9.75f)).Width + Dpi.S(32);
+            _checkBtn.SetBounds(w - bw, 0, bw, h);
+            int right = _checkBtn.Left - gap;
+            if (_regionBox.Visible)
+            {
+                int rw = Dpi.S(130);
+                _regionBox.SetBounds(right - rw, 0, rw, h);
+                right = _regionBox.Left - gap;
+            }
+            _keyBox.SetBounds(0, 0, Math.Max(40, right), h);
+            _keyStatus.SetBounds(0, Dpi.S(46), w, Dpi.S(20));
         }
 
         private static ThemedPanel NewCell(int height) => new()
@@ -362,10 +477,31 @@ namespace TraductorNWN
             return label;
         }
 
-        private void UpdateSettingsHeight()
+        // El panel de ajustes crece con su contenido hasta dejar sitio al chat; si no cabe, se desplaza.
+        private void LayoutSettings()
         {
-            int h = _settingsPanel.Padding.Vertical + _settingsTable.Height + 1;
-            if (_settingsPanel.Height != h) _settingsPanel.Height = h;
+            if (_settingsPanel == null || !_settingsPanel.Visible) return;
+            var pad = _settingsPanel.Padding;
+            int available = ClientSize.Height - _header.Height - (_tabRow.Visible ? _tabRow.Height : 0) - _footer.Height;
+            int maxHeight = Math.Max(Dpi.S(160), available - Dpi.S(150));
+
+            int tableWidth = Math.Max(Dpi.S(240), _settingsPanel.Width - pad.Horizontal);
+            int contentHeight = _settingsTable.GetPreferredSize(new Size(tableWidth, 0)).Height;
+            int desired = pad.Vertical + contentHeight + 1;
+            bool scroll = desired > maxHeight;
+            if (scroll)
+            {
+                tableWidth -= SystemInformation.VerticalScrollBarWidth;
+                contentHeight = _settingsTable.GetPreferredSize(new Size(tableWidth, 0)).Height;
+                desired = pad.Vertical + contentHeight + 1;
+            }
+
+            _settingsTable.Size = new Size(tableWidth, contentHeight);
+            _settingsPanel.AutoScrollMinSize = scroll ? new Size(0, desired) : Size.Empty;
+            var offset = _settingsPanel.AutoScrollPosition;
+            _settingsTable.Location = new Point(pad.Left + offset.X, pad.Top + offset.Y);
+            int height = Math.Min(desired, maxHeight);
+            if (_settingsPanel.Height != height) _settingsPanel.Height = height;
         }
 
         private void BuildTabs()
@@ -506,15 +642,17 @@ namespace TraductorNWN
             _suppressEvents = true;
             try
             {
-                bool deepl = string.Equals(_settings.Proveedor, "DeepL", StringComparison.OrdinalIgnoreCase);
-                _providerSeg.SetSelectedSilently(deepl ? 1 : 0);
-                _keyBox.Input.Text = _settings.DeepLKey ?? "";
-                _translator.DeepLKey = deepl ? _settings.DeepLKey : null;
-                SetDeepLRowsVisible(deepl);
-                SetKeyStatus(string.IsNullOrEmpty(_settings.DeepLKey)
-                    ? "Pega tu clave y pulsa Comprobar. El plan gratuito incluye 500.000 caracteres al mes."
-                    : "Clave guardada.", Tone.Dim);
+                // Las dos claves se cargan siempre: si Google bloquea, se usa la otra mientras tanto.
+                _translator.SetKey(Proveedor.DeepL, _settings.DeepLKey);
+                _translator.SetKey(Proveedor.Microsoft, _settings.MicrosoftKey, _settings.MicrosoftRegion);
+                var preferred = ParseProvider(_settings.Proveedor);
+                _translator.Preferred = preferred;
+                _providerSeg.SetSelectedSilently((int)preferred);
+                ShowProviderRows(preferred);
                 _usageLabel.Text = "Pulsa Comprobar para ver el consumo de este mes.";
+
+                _glossaryBox.Input.Text = string.Join(", ", _settings.NoTraducir);
+                _translator.SetProtectedTerms(_settings.NoTraducir);
 
                 _delaySlider.Value = (int)Math.Round(_settings.RetardoEnvioMs / 500.0);
                 _delayValue.Text = FormatSeconds(_delaySlider.Value * 500);
@@ -528,6 +666,11 @@ namespace TraductorNWN
                 _topSwitch.Checked = _settings.SiempreEncima;
                 TopMost = _settings.SiempreEncima;
                 _returnSwitch.Checked = _settings.VolverAlTraductor;
+                _hotkeySwitch.Checked = _settings.TeclaRapida;
+                _alertSwitch.Checked = _settings.AvisarPrivados;
+                _compactSwitch.Checked = _settings.Compacto;
+                _opacitySlider.Value = (int)Math.Round(_settings.OpacidadInactiva / 10.0);
+                _opacityValue.Text = $"{_opacitySlider.Value * 10} %";
 
                 _mayusculas = _settings.Mayusculas;
                 _capsBtn.Checked = _mayusculas;
@@ -536,6 +679,65 @@ namespace TraductorNWN
             {
                 _suppressEvents = false;
             }
+            ApplyCompact(_settings.Compacto);
+        }
+
+        private static Proveedor ParseProvider(string? name) =>
+            Enum.TryParse<Proveedor>(name, true, out var p) && Enum.IsDefined(p) ? p : Proveedor.Google;
+
+        private Proveedor SelectedProvider => (Proveedor)Math.Clamp(_providerSeg.SelectedIndex, 0, 2);
+
+        // Muestra la fila de la clave (DeepL o Microsoft) y el consumo (solo DeepL) según el traductor elegido.
+        private void ShowProviderRows(Proveedor p)
+        {
+            bool keyed = p != Proveedor.Google;
+            _keyLabel.Visible = keyed;
+            _keyCell.Visible = keyed;
+            _usageRowLabel.Visible = p == Proveedor.DeepL;
+            _usageCell.Visible = p == Proveedor.DeepL;
+            _regionBox.Visible = p == Proveedor.Microsoft;
+
+            if (keyed)
+            {
+                bool deepl = p == Proveedor.DeepL;
+                _keyLabel.Text = deepl ? "Clave de DeepL" : "Clave de Microsoft";
+                _keyBox.Input.Hint = deepl ? "Pega aquí tu clave de DeepL" : "Pega aquí tu clave de Microsoft Translator";
+                _keyBox.Input.AccessibleName = _keyLabel.Text;
+                _keyBox.Input.Text = (deepl ? _settings.DeepLKey : _settings.MicrosoftKey) ?? "";
+                _regionBox.Input.Text = _settings.MicrosoftRegion ?? "";
+
+                if (_keyBox.Input.TextLength == 0)
+                {
+                    SetKeyStatus(deepl
+                        ? "Pega tu clave y pulsa Comprobar. Mientras tanto se usa Google."
+                        : "Pega la clave y la región de tu recurso Translator de Azure y pulsa Comprobar. Mientras tanto se usa Google.",
+                        Tone.Dim);
+                }
+                else if (_translator.IsUsable(p))
+                {
+                    SetKeyStatus("Clave guardada.", Tone.Dim);
+                }
+                else
+                {
+                    SetKeyStatus("La clave guardada ha dejado de funcionar: pulsa Comprobar o pega otra.", Tone.Warn);
+                }
+                LayoutKeyCell();
+            }
+            LayoutSettings();
+        }
+
+        // Ventana compacta: sin título, pestañas ni línea de ayuda, para dejarla pequeña sobre el juego.
+        private void ApplyCompact(bool compact)
+        {
+            _header.Height = Dpi.S(compact ? 56 : 68);
+            _title.Visible = !compact;
+            _subtitle.Visible = !compact;
+            _tabRow.Visible = !compact;
+            _hint.Visible = !compact;
+            _footer.Height = Dpi.S(compact ? 72 : 98);
+            MinimumSize = compact ? new Size(Dpi.S(400), Dpi.S(320)) : new Size(Dpi.S(560), Dpi.S(560));
+            LayoutHeader();
+            LayoutSettings();
         }
 
         private void ApplyTheme(AppTheme theme)
@@ -577,6 +779,61 @@ namespace TraductorNWN
             base.OnHandleCreated(e);
             _ownHandle = Handle;
             ApplyTitleBar();
+            if (_settings.TeclaRapida) RegisterHotkey();
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            UnregisterHotkey();
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == NativeMethods.WM_HOTKEY && (int)m.WParam == HotkeyId)
+            {
+                OnHotkey();
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        private void RegisterHotkey()
+        {
+            if (_hotkeyRegistered || !IsHandleCreated) return;
+            _hotkeyRegistered = NativeMethods.RegisterHotKey(Handle, HotkeyId,
+                NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT | NativeMethods.MOD_NOREPEAT, NativeMethods.VK_SPACE);
+            if (!_hotkeyRegistered)
+                Notify("No se pudo activar Ctrl+Mayús+Espacio: otro programa ya usa esa combinación.", Tone.Warn);
+        }
+
+        private void UnregisterHotkey()
+        {
+            if (!_hotkeyRegistered) return;
+            NativeMethods.UnregisterHotKey(Handle, HotkeyId);
+            _hotkeyRegistered = false;
+        }
+
+        // Ctrl+Mayús+Espacio: desde el juego salta al campo de escribir; desde el traductor vuelve al juego.
+        // Un mensaje escrito tras saltar con la tecla se envía y te deja en el juego.
+        private void OnHotkey()
+        {
+            var foreground = NativeMethods.GetForegroundWindow();
+            if (foreground == Handle)
+            {
+                var game = _hotkeyReturnTo != IntPtr.Zero && NativeMethods.IsWindow(_hotkeyReturnTo)
+                    ? _hotkeyReturnTo
+                    : GameSender.FindGameWindow();
+                _hotkeyReturnTo = IntPtr.Zero;
+                if (game != IntPtr.Zero) WindowFocus.BringToFront(game);
+                return;
+            }
+
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            WindowFocus.BringToFront(Handle);
+            Activate();
+            _hotkeyReturnTo = foreground;
+            _input.Input.Focus();
         }
 
         private void ToggleSettings(bool? open = null)
@@ -588,20 +845,13 @@ namespace TraductorNWN
             _settingsBtn.AccessibleName = show ? "Cerrar ajustes" : "Ajustes";
             if (show)
             {
-                _settingsTable.PerformLayout();
-                UpdateSettingsHeight();
+                LayoutSettings();
             }
             else
             {
+                if (_glossaryTimer.Enabled) ApplyGlossary();
                 _input.Input.Focus();
             }
-        }
-
-        private void SetDeepLRowsVisible(bool visible)
-        {
-            foreach (var c in _deeplRowControls) c.Visible = visible;
-            _settingsTable.PerformLayout();
-            UpdateSettingsHeight();
         }
 
         private void SelectTab(int index)
@@ -619,7 +869,9 @@ namespace TraductorNWN
         private void UpdateStatus()
         {
             if (_pill == null || _incoming == null) return;
-            bool deepl = _translator.ActiveProvider == Proveedor.DeepL;
+            var active = _translator.ActiveProvider;
+            string shortName = TranslationService.Name(active);
+            string longName = active == Proveedor.Google ? "Google Translate" : shortName;
             var cooldown = _translator.CooldownRemaining;
             int pending = _incoming.Pending;
 
@@ -631,15 +883,15 @@ namespace TraductorNWN
             }
             else if (!_logFound)
             {
-                resized = _pill.SetState(Tone.Dim, "Esperando al juego", Tone.Dim, deepl ? "DeepL" : "Google", Tone.Dim, warn: false);
+                resized = _pill.SetState(Tone.Dim, "Esperando al juego", Tone.Dim, shortName, Tone.Dim, warn: false);
             }
             else if (pending >= 3)
             {
-                resized = _pill.SetState(Tone.Accent, deepl ? "DeepL" : "Google", Tone.Text, $"{pending} en cola", Tone.Dim, warn: false);
+                resized = _pill.SetState(Tone.Accent, shortName, Tone.Text, $"{pending} en cola", Tone.Dim, warn: false);
             }
             else
             {
-                resized = _pill.SetState(Tone.Ok, deepl ? "DeepL" : "Google Translate", Tone.Text, "", Tone.Dim, warn: false);
+                resized = _pill.SetState(Tone.Ok, longName, Tone.Text, "", Tone.Dim, warn: false);
             }
             if (resized) LayoutHeader();
         }
@@ -662,7 +914,7 @@ namespace TraductorNWN
                 bool more = pending > 1;
                 if (_translator.CooldownRemaining.TotalSeconds >= 1)
                 {
-                    var provider = _translator.ActiveProvider == Proveedor.DeepL ? "DeepL" : "Google";
+                    var provider = TranslationService.Name(_translator.ActiveProvider);
                     text = $"«{Shorten(last.Text)}» está en cola: sale en cuanto {provider} vuelva a responder. Esc para cancelarlo.";
                     tone = Tone.Warn;
                 }
@@ -750,7 +1002,8 @@ namespace TraductorNWN
             RunBackground(() => _incoming.RunAsync(ct), "traductor");
             RunBackground(() => OutgoingWorkerAsync(ct), "envío al juego");
 
-            if (_translator.DeepLKey is string key) _ = RefreshUsageAsync(key);
+            if (_translator.Preferred == Proveedor.DeepL && _translator.GetKey(Proveedor.DeepL) is string key)
+                _ = RefreshUsageAsync(key);
             CheckGameChatLogging();
         }
 
@@ -769,6 +1022,7 @@ namespace TraductorNWN
             _cts.Cancel();
             _uiTimer.Stop();
             _saveTimer.Stop();
+            if (_glossaryTimer.Enabled) ApplyGlossary();
             _incoming.Complete();
             _outgoing.Writer.TryComplete();
             SaveWindowBounds();
@@ -781,6 +1035,8 @@ namespace TraductorNWN
             {
                 _uiTimer.Dispose();
                 _saveTimer.Dispose();
+                _glossaryTimer.Dispose();
+                _opacityPreviewTimer.Dispose();
                 _translator.Dispose();
             }
             base.Dispose(disposing);
@@ -853,7 +1109,12 @@ namespace TraductorNWN
                 if (line.Time == null) line = line with { Time = DateTime.Now.ToString("HH:mm", CultureInfo.InvariantCulture) };
 
                 bool translate = line.Kind == LineKind.Chat || !_filtrarSistema;
-                if (line.Kind == LineKind.Chat) SignalEcho(line.Text);
+                if (line.Kind == LineKind.Chat)
+                {
+                    SignalEcho(line.Text);
+                    if (_settings.AvisarPrivados && IsPrivate(line.Channel) && !WasRecentlySent(line.Text))
+                        AlertPrivate();
+                }
 
                 // La pestaña Inglés no espera a nadie: se pinta al instante.
                 var b = new MessageBuilder();
@@ -946,6 +1207,7 @@ namespace TraductorNWN
         {
             public required string Text { get; init; }
             public required bool Raw { get; init; }       // Ctrl+Enter: sin traducir
+            public required bool ReturnToApp { get; init; } // volver al traductor después de enviar
             public CancellationTokenSource Cts { get; } = new();
             public bool Committed { get; set; }           // ya se está escribiendo en el juego: no se puede cancelar
         }
@@ -966,7 +1228,9 @@ namespace TraductorNWN
             _input.Input.Clear();
 
             // No se traduce aquí: la ventana nunca se congela esperando a la red.
-            var item = new OutgoingItem { Text = text, Raw = raw };
+            // Si se llegó con la tecla rápida desde el juego, después de enviar se queda en el juego.
+            var item = new OutgoingItem { Text = text, Raw = raw, ReturnToApp = _settings.VolverAlTraductor && _hotkeyReturnTo == IntPtr.Zero };
+            _hotkeyReturnTo = IntPtr.Zero;
             lock (_pendingOut) _pendingOut.Add(item);
             _outgoing.Writer.TryWrite(item);
             UpdateHint();
@@ -1074,7 +1338,7 @@ namespace TraductorNWN
             if (echoKey != null) RememberSent(echoKey);
 
             string? error;
-            try { error = GameSender.Send(textForGame, _settings.VolverAlTraductor ? _ownHandle : IntPtr.Zero); }
+            try { error = GameSender.Send(textForGame, item.ReturnToApp ? _ownHandle : IntPtr.Zero); }
             catch (Exception ex) { error = "Error al enviar al juego: " + ex.Message; }
 
             var status = SendStatus.Failed;
@@ -1174,6 +1438,43 @@ namespace TraductorNWN
             seen?.TrySetResult(true);
         }
 
+        private bool WasRecentlySent(string text)
+        {
+            var key = Normalize(text);
+            long now = Environment.TickCount64;
+            lock (_recentSent)
+                return _recentSent.Any(x => now - x.At <= 60_000 && EchoMatches(key, x.Text));
+        }
+
+        private static bool IsPrivate(string? channel) =>
+            string.Equals(channel, "Tell", StringComparison.OrdinalIgnoreCase);
+
+        // Mensaje privado: sonido y parpadeo en la barra de tareas (como mucho uno cada 2 s).
+        private void AlertPrivate()
+        {
+            long now = Environment.TickCount64;
+            if (now - Interlocked.Read(ref _lastAlertAt) < 2000) return;
+            Interlocked.Exchange(ref _lastAlertAt, now);
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    System.Media.SystemSounds.Asterisk.Play();
+                    if (ActiveForm == this) return;
+                    var info = new NativeMethods.FLASHWINFO
+                    {
+                        cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.FLASHWINFO>(),
+                        hwnd = Handle,
+                        dwFlags = NativeMethods.FLASHW_ALL | NativeMethods.FLASHW_TIMERNOFG,
+                        uCount = 0,
+                        dwTimeout = 0
+                    };
+                    NativeMethods.FlashWindowEx(ref info);
+                });
+            }
+            catch (InvalidOperationException) { /* ventana aún sin crear o cerrándose */ }
+        }
+
         private bool ConsumeEcho(string text)
         {
             var key = Normalize(text);
@@ -1245,37 +1546,82 @@ namespace TraductorNWN
             ScheduleSave();
         }
 
+        private void HotkeySwitch_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            _settings.TeclaRapida = _hotkeySwitch.Checked;
+            if (_settings.TeclaRapida) RegisterHotkey();
+            else UnregisterHotkey();
+            ScheduleSave();
+        }
+
+        private void AlertSwitch_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            _settings.AvisarPrivados = _alertSwitch.Checked;
+            ScheduleSave();
+        }
+
+        private void CompactSwitch_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            _settings.Compacto = _compactSwitch.Checked;
+            ApplyCompact(_settings.Compacto);
+            ScheduleSave();
+        }
+
+        private void OpacitySlider_ValueChanged(object? sender, EventArgs e)
+        {
+            int percent = _opacitySlider.Value * 10;
+            _opacityValue.Text = $"{percent} %";
+            if (_suppressEvents) return;
+            _settings.OpacidadInactiva = percent;
+            ScheduleSave();
+
+            // Vista previa un momento, para ver cómo quedará.
+            Opacity = percent / 100.0;
+            _opacityPreviewTimer.Stop();
+            _opacityPreviewTimer.Start();
+        }
+
+        private void ApplyGlossary()
+        {
+            _glossaryTimer.Stop();
+            var terms = ProtectedTerms.ParseList(_glossaryBox.Input.Text);
+            if (terms.SequenceEqual(_settings.NoTraducir, StringComparer.OrdinalIgnoreCase)) return;
+            _settings.NoTraducir = terms;
+            _translator.SetProtectedTerms(terms);
+            ScheduleSave();
+        }
+
         private void ProviderSeg_SelectedIndexChanged(object? sender, EventArgs e)
         {
             if (_suppressEvents) return;
-            bool deepl = _providerSeg.SelectedIndex == 1;
-            _settings.Proveedor = deepl ? "DeepL" : "Google";
-            SetDeepLRowsVisible(deepl);
-
-            if (!deepl)
-            {
-                _translator.DeepLKey = null;
-            }
-            else if (!string.IsNullOrEmpty(_settings.DeepLKey))
-            {
-                _translator.DeepLKey = _settings.DeepLKey;
-            }
-            else
-            {
-                _keyBox.Input.Focus();
-                SetKeyStatus("Pega tu clave y pulsa Comprobar. Mientras tanto se sigue usando Google.", Tone.Dim);
-            }
-
+            var p = SelectedProvider;
+            _settings.Proveedor = p.ToString();
+            _translator.Preferred = p;
+            ShowProviderRows(p);
+            if (p != Proveedor.Google && _translator.GetKey(p) == null) _keyBox.Input.Focus();
             ScheduleSave();
             UpdateStatus();
         }
 
+        private void KeyField_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            if (_checkBtn.Enabled) CheckKey_Click(_checkBtn, EventArgs.Empty);
+        }
+
         private async void CheckKey_Click(object? sender, EventArgs e)
         {
+            var p = SelectedProvider;
+            if (p == Proveedor.Google) return;
             var key = _keyBox.Input.Text.Trim();
+            var region = _regionBox.Input.Text.Trim();
             if (key.Length == 0)
             {
-                SetKeyStatus("Pega tu clave de DeepL y pulsa Comprobar.", Tone.Warn);
+                SetKeyStatus("Pega la clave y pulsa Comprobar.", Tone.Warn);
                 return;
             }
 
@@ -1284,16 +1630,28 @@ namespace TraductorNWN
             SetKeyStatus("Comprobando la clave…", Tone.Dim);
             try
             {
-                var usage = await _translator.CheckDeepLKeyAsync(key, _cts.Token);
-                ApplyDeepLKey(key);
-                SetKeyStatus(key.EndsWith(":fx", StringComparison.OrdinalIgnoreCase)
-                    ? "✓ Clave válida, plan gratuito"
-                    : "✓ Clave válida, plan Pro", Tone.Ok);
-                ShowUsage(usage);
+                if (p == Proveedor.DeepL)
+                {
+                    var usage = await _translator.CheckDeepLKeyAsync(key, _cts.Token);
+                    ApplyKey(p, key, null);
+                    SetKeyStatus(key.EndsWith(":fx", StringComparison.OrdinalIgnoreCase)
+                        ? "✓ Clave válida, plan gratuito"
+                        : "✓ Clave válida", Tone.Ok);
+                    ShowUsage(usage);
+                }
+                else
+                {
+                    await _translator.CheckMicrosoftKeyAsync(key, region, _cts.Token);
+                    ApplyKey(p, key, region);
+                    SetKeyStatus("✓ Clave válida. Microsoft Translator listo.", Tone.Ok);
+                }
             }
-            catch (DeepLUnavailableException ex)
+            catch (ProviderUnavailableException ex)
             {
-                SetKeyStatus("DeepL rechazó la clave: " + ex.Message + ". Se sigue usando el traductor anterior.", Tone.Warn);
+                var hint = p == Proveedor.Microsoft && region.Length == 0
+                    ? " Si tu recurso no es global, escribe su región (por ejemplo westeurope)."
+                    : "";
+                SetKeyStatus($"{TranslationService.Name(p)} rechazó la clave: {ex.Message}.{hint}", Tone.Warn);
             }
             catch (OperationCanceledException)
             {
@@ -1302,7 +1660,7 @@ namespace TraductorNWN
             catch (Exception ex)
             {
                 // Sin conexión para comprobarla: se guarda igualmente.
-                ApplyDeepLKey(key);
+                ApplyKey(p, key, region);
                 SetKeyStatus("No se pudo comprobar (" + ex.Message + "). Se usará igualmente.", Tone.Dim);
             }
             finally
@@ -1322,7 +1680,7 @@ namespace TraductorNWN
             {
                 ShowUsage(await _translator.CheckDeepLKeyAsync(key, _cts.Token));
             }
-            catch (DeepLUnavailableException ex)
+            catch (ProviderUnavailableException ex)
             {
                 SetKeyStatus("DeepL no acepta la clave guardada: " + ex.Message + ".", Tone.Warn);
             }
@@ -1332,12 +1690,20 @@ namespace TraductorNWN
             }
         }
 
-        private void ApplyDeepLKey(string key)
+        private void ApplyKey(Proveedor p, string key, string? region)
         {
-            _settings.DeepLKey = key;
-            _settings.Proveedor = "DeepL";
-            _translator.DeepLKey = key;
-            _providerSeg.SetSelectedSilently(1);
+            if (p == Proveedor.DeepL)
+            {
+                _settings.DeepLKey = key;
+            }
+            else
+            {
+                _settings.MicrosoftKey = key;
+                _settings.MicrosoftRegion = string.IsNullOrWhiteSpace(region) ? null : region.Trim();
+            }
+            _settings.Proveedor = p.ToString();
+            _translator.SetKey(p, key, region);
+            _translator.Preferred = p;
             _settings.Save();
         }
 

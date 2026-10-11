@@ -27,9 +27,19 @@ namespace TraductorNWN
         public int RetardoEnvioMs { get; set; } = 2000;
         public int[]? Ventana { get; set; }
         public string Tema { get; set; } = "taberna";
-        public string? Proveedor { get; set; }          // "Google" | "DeepL" (null = DeepL si hay clave)
+        public string? Proveedor { get; set; }          // "Google" | "DeepL" | "Microsoft" (null = DeepL si hay clave)
         public bool SiempreEncima { get; set; } = true;
         public bool VolverAlTraductor { get; set; } = true;
+        public string? MicrosoftKeyCifrada { get; set; }
+        public string? MicrosoftRegion { get; set; }
+        public List<string> NoTraducir { get; set; } = new();
+        public bool AvisarPrivados { get; set; } = true;
+        public bool TeclaRapida { get; set; } = true;
+        public bool Compacto { get; set; }
+        public int OpacidadInactiva { get; set; } = 100;   // % cuando la ventana no está activa
+
+        [JsonIgnore]
+        public string? MicrosoftKey { get; set; }
 
         [JsonIgnore]
         public string? DeepLKey { get; set; }
@@ -50,6 +60,8 @@ namespace TraductorNWN
 
             if (!string.IsNullOrEmpty(s.DeepLKeyCifrada))
                 s.DeepLKey = Unprotect(s.DeepLKeyCifrada);
+            if (!string.IsNullOrEmpty(s.MicrosoftKeyCifrada))
+                s.MicrosoftKey = Unprotect(s.MicrosoftKeyCifrada);
 
             try
             {
@@ -65,6 +77,8 @@ namespace TraductorNWN
 
             s.RetardoEnvioMs = Math.Clamp(s.RetardoEnvioMs, 0, 5_000);
             s.Proveedor ??= string.IsNullOrEmpty(s.DeepLKey) ? "Google" : "DeepL";
+            s.OpacidadInactiva = Math.Clamp(s.OpacidadInactiva, 40, 100);
+            s.NoTraducir ??= new List<string>();
             return s;
         }
 
@@ -73,6 +87,7 @@ namespace TraductorNWN
             try
             {
                 DeepLKeyCifrada = string.IsNullOrEmpty(DeepLKey) ? null : Protect(DeepLKey);
+                MicrosoftKeyCifrada = string.IsNullOrEmpty(MicrosoftKey) ? null : Protect(MicrosoftKey);
                 Directory.CreateDirectory(Folder);
                 var tmp = FilePath + ".tmp";
                 File.WriteAllText(tmp, JsonSerializer.Serialize(this, JsonOptions));

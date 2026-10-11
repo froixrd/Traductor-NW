@@ -54,5 +54,14 @@ namespace TraductorNWN
                 }
             }
         }
+
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                _map.Clear();
+                _order.Clear();
+            }
+        }
     }
 }

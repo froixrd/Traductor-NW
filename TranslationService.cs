@@ -4,18 +4,18 @@ using System.Text.Json;
 
 namespace TraductorNWN
 {
-    internal enum Proveedor { Google, DeepL }
+    internal enum Proveedor { Google, DeepL, Microsoft }
 
     internal class TranslationException : Exception
     {
         public TranslationException(string message, Exception? inner = null) : base(message, inner) { }
     }
 
-    // El proveedor nos está limitando (429). RetryAfter = pausa efectiva aplicada.
+    // El proveedor nos está limitando (429 o bloqueo). RetryAfter = pausa efectiva aplicada.
     internal sealed class RateLimitedException : TranslationException
     {
         public RateLimitedException(Proveedor provider, TimeSpan? retryAfter)
-            : base($"{provider} ha limitado las peticiones (429).")
+            : base($"{TranslationService.Name(provider)} ha limitado las peticiones.")
         {
             Provider = provider;
             RetryAfter = retryAfter;
@@ -31,10 +31,15 @@ namespace TraductorNWN
         public TransientTranslationException(string message, Exception? inner = null) : base(message, inner) { }
     }
 
-    // DeepL no se puede usar (clave inválida o cuota agotada): se cae a Google.
-    internal sealed class DeepLUnavailableException : TranslationException
+    // Un proveedor con clave no se puede usar (clave inválida o cuota agotada): se sigue con otro.
+    internal sealed class ProviderUnavailableException : TranslationException
     {
-        public DeepLUnavailableException(string message) : base(message) { }
+        public ProviderUnavailableException(Proveedor provider, string message) : base(message)
+        {
+            Provider = provider;
+        }
+
+        public Proveedor Provider { get; }
     }
 
     // La traducción agrupada de Google no devolvió el mismo número de líneas.
@@ -46,22 +51,37 @@ namespace TraductorNWN
     internal readonly record struct DeepLUsage(long Count, long Limit);
 
     // Motor de traducción:
-    //  - agrupa varias líneas en UNA petición (Google: separadas por salto de línea; DeepL: varios "text");
+    //  - tres proveedores: Google (gratis, sin clave, no oficial), DeepL y Microsoft Translator (con clave);
+    //  - agrupa varias líneas en UNA petición;
     //  - caché LRU para no repetir peticiones;
-    //  - un RateGate por proveedor con backoff exponencial y respeto del Retry-After;
-    //  - si DeepL se queda sin cuota o la clave falla, sigue con Google automáticamente.
+    //  - un RateGate por proveedor con espera progresiva y respeto del Retry-After;
+    //  - si el proveedor elegido está bloqueado o sin cuota, usa otro que tenga configurado;
+    //  - abreviaturas de chat escritas completas y palabras protegidas que nunca se traducen.
     internal sealed class TranslationService : IDisposable
     {
         private const int MaxItemsPorPeticion = 40;
         private const int MaxQueryChars = 6000; // tamaño máximo (ya codificado) del texto en la URL de Google
 
+        private sealed class KeyState
+        {
+            public volatile string? Key;
+            public volatile string? Region;
+            public volatile string? DisabledReason;
+        }
+
         private readonly HttpClient _http;
         private readonly LruCache<string, string> _cache = new(5000, StringComparer.Ordinal);
-        private readonly RateGate _googleGate = new(TimeSpan.FromMilliseconds(400));
-        private readonly RateGate _deeplGate = new(TimeSpan.FromMilliseconds(200));
 
-        private volatile string? _deeplKey;
-        private volatile string? _deeplDisabledReason;
+        // Google es un servicio público no oficial: una petición por segundo como mucho (las líneas que
+        // lleguen mientras tanto viajan juntas en la siguiente), para no provocar bloqueos.
+        private readonly RateGate _googleGate = new(TimeSpan.FromMilliseconds(1000));
+        private readonly RateGate _deeplGate = new(TimeSpan.FromMilliseconds(200));
+        private readonly RateGate _microsoftGate = new(TimeSpan.FromMilliseconds(200));
+
+        private readonly KeyState _deepl = new();
+        private readonly KeyState _microsoft = new();
+        private volatile Proveedor _preferred = Proveedor.Google;
+        private volatile ProtectedTerms _terms = ProtectedTerms.Empty;
 
         // Avisos para mostrar al usuario (p. ej. "DeepL sin cuota, se usa Google").
         public event Action<string>? Notice;
@@ -83,32 +103,89 @@ namespace TraductorNWN
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36");
         }
 
+        public static string Name(Proveedor p) => p switch
+        {
+            Proveedor.DeepL => "DeepL",
+            Proveedor.Microsoft => "Microsoft",
+            _ => "Google"
+        };
+
+        // ---------------- Configuración ----------------
+
+        public Proveedor Preferred
+        {
+            get => _preferred;
+            set => _preferred = value;
+        }
+
+        public void SetKey(Proveedor provider, string? key, string? region = null)
+        {
+            if (provider == Proveedor.Google) return;
+            var st = State(provider);
+            st.Key = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
+            st.Region = string.IsNullOrWhiteSpace(region) ? null : region.Trim();
+            st.DisabledReason = null;
+        }
+
+        public string? GetKey(Proveedor provider) => provider == Proveedor.Google ? null : State(provider).Key;
+
+        public bool IsUsable(Proveedor provider) =>
+            provider == Proveedor.Google || (State(provider).Key != null && State(provider).DisabledReason == null);
+
+        // Compatibilidad: poner una clave de DeepL la convierte en el proveedor preferido.
         public string? DeepLKey
         {
-            get => _deeplKey;
+            get => _deepl.Key;
             set
             {
-                _deeplKey = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-                _deeplDisabledReason = null;
+                SetKey(Proveedor.DeepL, value);
+                if (_deepl.Key != null) _preferred = Proveedor.DeepL;
+                else if (_preferred == Proveedor.DeepL) _preferred = Proveedor.Google;
             }
         }
 
-        public bool DeepLUsable => _deeplKey != null && _deeplDisabledReason == null;
+        public bool DeepLUsable => IsUsable(Proveedor.DeepL);
+
+        public void SetProtectedTerms(IEnumerable<string> terms)
+        {
+            _terms = new ProtectedTerms(terms);
+            _cache.Clear(); // las traducciones guardadas pueden haber traducido esas palabras
+        }
+
         public Proveedor ActiveProvider => ChooseProvider();
         public TimeSpan CooldownRemaining => Gate(ChooseProvider()).CooldownRemaining;
         public TimeSpan TimeUntilReady => Gate(ChooseProvider()).TimeUntilReady;
 
         public void Dispose() => _http.Dispose();
 
-        private RateGate Gate(Proveedor p) => p == Proveedor.DeepL ? _deeplGate : _googleGate;
+        private KeyState State(Proveedor p) => p == Proveedor.Microsoft ? _microsoft : _deepl;
+
+        private RateGate Gate(Proveedor p) => p switch
+        {
+            Proveedor.DeepL => _deeplGate,
+            Proveedor.Microsoft => _microsoftGate,
+            _ => _googleGate
+        };
 
         private Proveedor ChooseProvider()
         {
-            if (!DeepLUsable) return Proveedor.Google;
-            var deeplWait = _deeplGate.CooldownRemaining;
-            if (deeplWait <= TimeSpan.FromSeconds(2)) return Proveedor.DeepL;
-            // DeepL en pausa larga: mientras tanto tiramos de Google si está libre.
-            return _googleGate.CooldownRemaining < deeplWait ? Proveedor.Google : Proveedor.DeepL;
+            var preferred = IsUsable(_preferred) ? _preferred : Proveedor.Google;
+            var wait = Gate(preferred).CooldownRemaining;
+            if (wait <= TimeSpan.FromSeconds(2)) return preferred;
+
+            // El elegido está en pausa larga (bloqueo): mientras tanto, otro que esté configurado y libre.
+            var best = preferred;
+            foreach (var p in new[] { Proveedor.Microsoft, Proveedor.DeepL, Proveedor.Google })
+            {
+                if (p == preferred || !IsUsable(p)) continue;
+                var w = Gate(p).CooldownRemaining;
+                if (w < wait)
+                {
+                    best = p;
+                    wait = w;
+                }
+            }
+            return best;
         }
 
         // ---------------- API pública ----------------
@@ -208,6 +285,12 @@ namespace TraductorNWN
             }
         }
 
+        // Comprueba una clave de Microsoft traduciendo una palabra.
+        public async Task CheckMicrosoftKeyAsync(string key, string? region, CancellationToken ct)
+        {
+            await MicrosoftRequestAsync(new List<string> { "Hello" }, "en", "es", key.Trim(), region, ct).ConfigureAwait(false);
+        }
+
         // ---------------- Internos ----------------
 
         private static bool NeedsTranslation(string text)
@@ -241,6 +324,17 @@ namespace TraductorNWN
 
         private async Task<string[]> TranslateChunkAsync(List<string> chunk, string source, string target, CancellationToken ct)
         {
+            // Lo que se manda al traductor: abreviaturas completas (solo en inglés) y palabras protegidas.
+            var terms = _terms;
+            var prepared = new List<string>(chunk.Count);
+            var tokens = new List<string>?[chunk.Count];
+            for (int i = 0; i < chunk.Count; i++)
+            {
+                var t = source.Equals("en", StringComparison.OrdinalIgnoreCase) ? ChatSlang.Expand(chunk[i]) : chunk[i];
+                (var p, tokens[i]) = terms.Protect(t);
+                prepared.Add(p);
+            }
+
             var provider = ChooseProvider();
             var gate = Gate(provider);
             await gate.AcquireAsync(ct).ConfigureAwait(false);
@@ -248,9 +342,12 @@ namespace TraductorNWN
             string[] result;
             try
             {
-                result = provider == Proveedor.DeepL
-                    ? await DeepLAsync(chunk, source, target, ct).ConfigureAwait(false)
-                    : await GoogleAsync(chunk, source, target, ct).ConfigureAwait(false);
+                result = provider switch
+                {
+                    Proveedor.DeepL => await DeepLAsync(prepared, source, target, ct).ConfigureAwait(false),
+                    Proveedor.Microsoft => await MicrosoftAsync(prepared, source, target, ct).ConfigureAwait(false),
+                    _ => await GoogleAsync(prepared, source, target, ct).ConfigureAwait(false)
+                };
                 gate.ReportSuccess();
             }
             catch (RateLimitedException ex)
@@ -263,10 +360,10 @@ namespace TraductorNWN
                 gate.ReportTransientError();
                 throw;
             }
-            catch (DeepLUnavailableException ex)
+            catch (ProviderUnavailableException ex)
             {
-                _deeplDisabledReason = ex.Message;
-                Notice?.Invoke("DeepL no disponible (" + ex.Message + "). Se usa Google Translate hasta que vuelvas a conectar la clave.");
+                State(ex.Provider).DisabledReason = ex.Message;
+                Notice?.Invoke($"{Name(ex.Provider)} no disponible ({ex.Message}). Se usa Google Translate hasta que vuelvas a comprobar la clave.");
                 return await TranslateChunkAsync(chunk, source, target, ct).ConfigureAwait(false);
             }
             catch (SplitMismatchException) when (chunk.Count > 1)
@@ -281,8 +378,10 @@ namespace TraductorNWN
 
             for (int i = 0; i < chunk.Count; i++)
             {
-                if (string.IsNullOrWhiteSpace(result[i])) result[i] = chunk[i];
-                _cache.Set(CacheKey(chunk[i], source, target), result[i]);
+                var r = ProtectedTerms.Restore(result[i] ?? "", tokens[i]);
+                if (string.IsNullOrWhiteSpace(r)) r = chunk[i];
+                result[i] = r;
+                _cache.Set(CacheKey(chunk[i], source, target), r);
             }
             return result;
         }
@@ -305,13 +404,20 @@ namespace TraductorNWN
                 body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             }
 
-            if (body.Length == 0 || body[0] != '[')
+            var trimmed = body.TrimStart();
+            if (trimmed.Length == 0 || trimmed[0] != '[')
+            {
+                // Una página HTML en vez de datos es el aviso de "tráfico inusual": bloqueo, no un fallo puntual.
+                // Antes se reintentaba a los 2 s y eso alargaba el bloqueo.
+                if (trimmed.StartsWith('<') || trimmed.Contains("unusual traffic", StringComparison.OrdinalIgnoreCase))
+                    throw new RateLimitedException(Proveedor.Google, null);
                 throw new TransientTranslationException("Google devolvió una respuesta inesperada.");
+            }
 
             string full;
             try
             {
-                using var doc = JsonDocument.Parse(body);
+                using var doc = JsonDocument.Parse(trimmed);
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0 || root[0].ValueKind != JsonValueKind.Array)
                     throw new TransientTranslationException("Google devolvió una respuesta sin traducción.");
@@ -339,7 +445,7 @@ namespace TraductorNWN
 
         private async Task<string[]> DeepLAsync(List<string> texts, string source, string target, CancellationToken ct)
         {
-            var key = _deeplKey ?? throw new DeepLUnavailableException("sin clave");
+            var key = _deepl.Key ?? throw new ProviderUnavailableException(Proveedor.DeepL, "sin clave");
 
             var form = new List<KeyValuePair<string, string>>(texts.Count + 2);
             foreach (var t in texts) form.Add(new KeyValuePair<string, string>("text", t));
@@ -382,6 +488,51 @@ namespace TraductorNWN
         private static string DeepLBaseUrl(string key) =>
             key.EndsWith(":fx", StringComparison.OrdinalIgnoreCase) ? "https://api-free.deepl.com" : "https://api.deepl.com";
 
+        private Task<string[]> MicrosoftAsync(List<string> texts, string source, string target, CancellationToken ct)
+        {
+            var key = _microsoft.Key ?? throw new ProviderUnavailableException(Proveedor.Microsoft, "sin clave");
+            return MicrosoftRequestAsync(texts, source, target, key, _microsoft.Region, ct);
+        }
+
+        // Microsoft Translator v3: una lista de textos en JSON y una traducción por texto, en el mismo
+        // orden (sin trucos de saltos de línea). Lo que llega del juego se deja con detección automática
+        // por mensaje; lo que escribes tú se marca como español.
+        private async Task<string[]> MicrosoftRequestAsync(List<string> texts, string source, string target,
+            string key, string? region, CancellationToken ct)
+        {
+            var url = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=" + target;
+            if (source.Equals("es", StringComparison.OrdinalIgnoreCase)) url += "&from=es";
+
+            var payload = JsonSerializer.Serialize(texts.Select(t => new { Text = t }));
+            using var request = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            request.Headers.TryAddWithoutValidation("Ocp-Apim-Subscription-Key", key);
+            if (!string.IsNullOrWhiteSpace(region) && !region.Equals("global", StringComparison.OrdinalIgnoreCase))
+                request.Headers.TryAddWithoutValidation("Ocp-Apim-Subscription-Region", region.Trim());
+
+            using var resp = await SendAsync(request, Proveedor.Microsoft, ct).ConfigureAwait(false);
+            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() != texts.Count)
+                    throw new TransientTranslationException("Microsoft devolvió un número de traducciones distinto.");
+
+                var result = new string[texts.Count];
+                for (int i = 0; i < texts.Count; i++)
+                    result[i] = root[i].GetProperty("translations")[0].GetProperty("text").GetString() ?? texts[i];
+                return result;
+            }
+            catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException)
+            {
+                throw new TransientTranslationException("Respuesta de Microsoft no válida.", ex);
+            }
+        }
+
         // Envía la petición y traduce los códigos HTTP a nuestras excepciones.
         private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, Proveedor provider, CancellationToken ct)
         {
@@ -407,17 +558,26 @@ namespace TraductorNWN
             try { detail = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); } catch { /* da igual */ }
             resp.Dispose();
 
-            if (status == 429 || (provider == Proveedor.Google && status == 503))
-                throw new RateLimitedException(provider, retryAfter);
+            if (status == 429) throw new RateLimitedException(provider, retryAfter);
 
-            if (provider == Proveedor.DeepL)
+            switch (provider)
             {
-                if (status == 456) throw new DeepLUnavailableException("cuota de caracteres agotada");
-                if (status == 401 || status == 403) throw new DeepLUnavailableException("clave no válida");
+                case Proveedor.Google:
+                    // Google también bloquea con 403 o 503 (antes un 403 no hacía esperar y se seguía insistiendo).
+                    if (status is 403 or 503) throw new RateLimitedException(provider, retryAfter);
+                    break;
+                case Proveedor.DeepL:
+                    if (status == 456) throw new ProviderUnavailableException(provider, "cuota de caracteres agotada");
+                    if (status is 401 or 403) throw new ProviderUnavailableException(provider, "clave no válida");
+                    break;
+                case Proveedor.Microsoft:
+                    if (status == 401) throw new ProviderUnavailableException(provider, "clave o región no válidas");
+                    if (status == 403) throw new ProviderUnavailableException(provider, "cuota gratuita agotada o clave sin permiso");
+                    break;
             }
 
             if (status >= 500) throw new TransientTranslationException($"el servidor respondió {status}");
-            throw new TranslationException($"{provider} respondió {status}: {Shorten(detail)}");
+            throw new TranslationException($"{Name(provider)} respondió {status}: {Shorten(detail)}");
         }
 
         private static TimeSpan? GetRetryAfter(HttpResponseMessage resp)

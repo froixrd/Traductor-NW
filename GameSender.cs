@@ -54,7 +54,7 @@ namespace TraductorNWN
             if (NativeMethods.IsIconic(hwnd))
                 NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
 
-            if (!BringToFront(hwnd))
+            if (!WindowFocus.BringToFront(hwnd))
                 return "Windows no dejó poner el juego en primer plano. Haz clic en el juego y vuelve a enviar el mensaje.";
 
             // Con Alt, Ctrl o Mayús pulsadas, Enter podría hacer otra cosa (Alt+Enter = pantalla completa).
@@ -89,7 +89,7 @@ namespace TraductorNWN
             if (returnTo != IntPtr.Zero && previous == returnTo && NativeMethods.IsWindow(returnTo))
             {
                 Thread.Sleep(150); // que el juego reciba el Enter antes de perder el foco
-                BringToFront(returnTo);
+                WindowFocus.BringToFront(returnTo);
             }
             return null;
         }
@@ -170,7 +170,7 @@ namespace TraductorNWN
             return false;
         }
 
-        private static IntPtr FindGameWindow()
+        internal static IntPtr FindGameWindow()
         {
             if (_cachedWindow != IntPtr.Zero && NativeMethods.IsWindow(_cachedWindow) && NativeMethods.IsWindowVisible(_cachedWindow))
                 return _cachedWindow;
@@ -253,8 +253,13 @@ namespace TraductorNWN
                 return false;
             }
         }
+    }
 
-        private static bool BringToFront(IntPtr hwnd)
+    // Poner una ventana en primer plano. Windows a veces lo impide; el truco habitual es enlazar
+    // temporalmente la entrada con el hilo de la ventana que tiene el foco.
+    internal static class WindowFocus
+    {
+        public static bool BringToFront(IntPtr hwnd)
         {
             if (NativeMethods.GetForegroundWindow() == hwnd) return true;
 
@@ -280,7 +285,7 @@ namespace TraductorNWN
             return WaitForeground(hwnd, 300);
         }
 
-        private static bool WaitForeground(IntPtr hwnd, int timeoutMs)
+        public static bool WaitForeground(IntPtr hwnd, int timeoutMs)
         {
             var sw = Stopwatch.StartNew();
             while (sw.ElapsedMilliseconds < timeoutMs)

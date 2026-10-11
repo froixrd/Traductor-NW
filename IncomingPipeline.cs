@@ -113,7 +113,7 @@ namespace TraductorNWN
                     {
                         limited = true;
                         var secs = Math.Ceiling((ex.RetryAfter ?? _translator.TimeUntilReady).TotalSeconds);
-                        _onNotice($"{ex.Provider} está limitando las peticiones. Lo vuelve a intentar en {secs} s " +
+                        _onNotice($"{TranslationService.Name(ex.Provider)} está limitando las peticiones. Lo vuelve a intentar en {secs} s " +
                                   "y traduce de una vez todo lo que llegue mientras tanto.", true);
                     }
                 }
