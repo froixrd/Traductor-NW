@@ -249,7 +249,7 @@ namespace TraductorNWN
             try
             {
                 result = provider == Proveedor.DeepL
-                    ? await DeepLAsync(chunk, target, ct).ConfigureAwait(false)
+                    ? await DeepLAsync(chunk, source, target, ct).ConfigureAwait(false)
                     : await GoogleAsync(chunk, source, target, ct).ConfigureAwait(false);
                 gate.ReportSuccess();
             }
@@ -337,12 +337,17 @@ namespace TraductorNWN
             return parts;
         }
 
-        private async Task<string[]> DeepLAsync(List<string> texts, string target, CancellationToken ct)
+        private async Task<string[]> DeepLAsync(List<string> texts, string source, string target, CancellationToken ct)
         {
             var key = _deeplKey ?? throw new DeepLUnavailableException("sin clave");
 
-            var form = new List<KeyValuePair<string, string>>(texts.Count + 1);
+            var form = new List<KeyValuePair<string, string>>(texts.Count + 2);
             foreach (var t in texts) form.Add(new KeyValuePair<string, string>("text", t));
+            // Lo que escribes tú está siempre en español: indicarlo evita que DeepL confunda frases
+            // cortas ("vale", "venga") con otro idioma. Lo que llega del juego se deja en automático
+            // porque cada jugador puede escribir en un idioma distinto.
+            if (source.Equals("es", StringComparison.OrdinalIgnoreCase))
+                form.Add(new KeyValuePair<string, string>("source_lang", "ES"));
             form.Add(new KeyValuePair<string, string>("target_lang",
                 target.Equals("es", StringComparison.OrdinalIgnoreCase) ? "ES" : "EN-US"));
 

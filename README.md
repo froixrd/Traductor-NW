@@ -18,6 +18,21 @@ Neverwinter Nights: Enhanced Edition.
   cualquier distribución de teclado (ñ, tildes, ¿ ¡) y nunca dispara atajos del juego.
 - Traduce con Google Translate o con DeepL (tiene plan gratuito).
 
+## Escribir en el juego
+
+- **Enter** traduce y envía. **Ctrl+Enter** envía el texto tal cual, sin traducir
+  (nombres, frases que ya tienes en inglés, comandos).
+- **Esc** cancela el mensaje que está esperando a salir y lo devuelve al campo
+  para corregirlo (para eso sirve la espera de "Esperar antes de enviar").
+- **Comandos de chat**: `/p`, `/s`, `/w`, `/dm`, `/tk` y `/t "Nombre"` se mantienen
+  y solo se traduce el mensaje: `/t "Seraphine" nos vemos luego` → `/t "Seraphine" see you later`.
+  Los demás comandos (`/roll`, `!comando` del servidor…) se envían tal cual.
+- Tras enviar, vuelve al traductor para seguir escribiendo (se puede desactivar
+  en Ajustes → "Después de enviar").
+- Las comillas tipográficas, guiones largos, emojis y demás caracteres que NWN no
+  sabe mostrar se cambian por su equivalente simple o se quitan.
+- Si no se pudo traducir o enviar, el mensaje vuelve al campo de texto.
+
 ## La interfaz
 
 - **El chat se lee como una crónica**: hora, nombre en el color de acento,
@@ -83,6 +98,12 @@ Se guarda en `%AppData%\TraductorNWN\config.json` (todo se cambia desde Ajustes)
 Los errores inesperados se registran en `%AppData%\TraductorNWN\errores.log`.
 
 ## Notas
+
+- **El juego tiene que guardar el chat en su log.** En NWN:EE se activa en
+  `Documentos\Neverwinter Nights\settings.tml`, sección `[game.log.chat.all]`,
+  con `enabled = true` (con el juego cerrado). Deja `[game.log.chat.text]` en
+  `enabled = false` o cada mensaje saldrá dos veces. Si no está activado, el
+  traductor te avisa al arrancar.
 
 - Windows SmartScreen puede avisar porque el .exe no está firmado:
   "Más información" → "Ejecutar de todas formas".

@@ -29,6 +29,7 @@ namespace TraductorNWN
         public string Tema { get; set; } = "taberna";
         public string? Proveedor { get; set; }          // "Google" | "DeepL" (null = DeepL si hay clave)
         public bool SiempreEncima { get; set; } = true;
+        public bool VolverAlTraductor { get; set; } = true;
 
         [JsonIgnore]
         public string? DeepLKey { get; set; }

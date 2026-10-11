@@ -38,11 +38,15 @@ namespace TraductorNWN
         //  - el texto se envía como caracteres Unicode: llega igual con cualquier distribución de
         //    teclado (ñ, tildes, ¿ ¡) y nunca puede disparar atajos del juego;
         //  - se deja margen para que el juego procese el texto antes del Enter final.
-        public static string? Send(string text)
+        //
+        // returnTo: ventana a la que devolver el foco al terminar (el traductor), solo si era la ventana
+        // activa justo antes de enviar; así se puede seguir escribiendo sin hacer clic.
+        public static string? Send(string text, IntPtr returnTo = default)
         {
-            var clean = CleanText(text);
+            var clean = OutgoingText.ForGame(text);
             if (clean.Length == 0) return null;
 
+            var previous = NativeMethods.GetForegroundWindow();
             var hwnd = FindGameWindow();
             if (hwnd == IntPtr.Zero)
                 return "No se encontró la ventana del juego. Asegúrate de que Neverwinter Nights esté abierto.";
@@ -80,6 +84,13 @@ namespace TraductorNWN
             // 4. Enviar.
             if (!PressEnter())
                 return BlockedMessage;
+
+            // 5. Volver al traductor, si desde ahí se escribió el mensaje.
+            if (returnTo != IntPtr.Zero && previous == returnTo && NativeMethods.IsWindow(returnTo))
+            {
+                Thread.Sleep(150); // que el juego reciba el Enter antes de perder el foco
+                BringToFront(returnTo);
+            }
             return null;
         }
 
@@ -157,19 +168,6 @@ namespace TraductorNWN
             foreach (var vk in new[] { VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN })
                 if ((NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0) return true;
             return false;
-        }
-
-        // Saltos de línea y tabuladores pasan a espacios (un Enter enviaría el mensaje a medias);
-        // los demás caracteres de control se quitan.
-        private static string CleanText(string text)
-        {
-            var sb = new StringBuilder(text.Length);
-            foreach (var c in text)
-            {
-                if (c is '\r' or '\n' or '\t') sb.Append(' ');
-                else if (!char.IsControl(c)) sb.Append(c);
-            }
-            return sb.ToString().Trim();
         }
 
         private static IntPtr FindGameWindow()

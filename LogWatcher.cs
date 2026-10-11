@@ -53,39 +53,8 @@ namespace TraductorNWN
 
         // Busca el log en las ubicaciones habituales (incluida la carpeta Documentos redirigida
         // a OneDrive, aunque esté en español) y se queda con el que se escribió más recientemente.
-        public static string? FindLogPath()
-        {
-            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var myDocs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-
-            var candidates = new List<string>();
-            if (!string.IsNullOrEmpty(myDocs))
-                candidates.Add(Path.Combine(myDocs, "Neverwinter Nights", "logs", LogFileName));
-            if (!string.IsNullOrEmpty(userProfile))
-            {
-                candidates.Add(Path.Combine(userProfile, "OneDrive", "Documents", "Neverwinter Nights", "logs", LogFileName));
-                candidates.Add(Path.Combine(userProfile, "OneDrive", "Documentos", "Neverwinter Nights", "logs", LogFileName));
-                candidates.Add(Path.Combine(userProfile, "Documents", "Neverwinter Nights", "logs", LogFileName));
-            }
-
-            string? best = null;
-            var bestTime = DateTime.MinValue;
-            foreach (var c in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    if (!File.Exists(c)) continue;
-                    var t = File.GetLastWriteTimeUtc(c);
-                    if (best == null || t > bestTime)
-                    {
-                        best = c;
-                        bestTime = t;
-                    }
-                }
-                catch { /* sin permisos, ruta rara… se ignora */ }
-            }
-            return best;
-        }
+        public static string? FindLogPath() =>
+            GameFolders.MostRecent(GameFolders.UserDirectories().Select(d => Path.Combine(d, "logs", LogFileName)));
 
         public async Task RunAsync(CancellationToken ct)
         {

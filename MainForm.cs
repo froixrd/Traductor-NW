@@ -25,8 +25,11 @@ namespace TraductorNWN
         private readonly CancellationTokenSource _cts = new();
 
         // Mensajes que escribe el usuario (se traducen y envían de uno en uno, en orden).
-        private readonly Channel<string> _outgoing = Channel.CreateUnbounded<string>(
+        private readonly Channel<OutgoingItem> _outgoing = Channel.CreateUnbounded<OutgoingItem>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+
+        // Mensajes escritos que aún no han salido (se pueden cancelar con Esc mientras esperan).
+        private readonly List<OutgoingItem> _pendingOut = new();
 
         // Lo que hay que pintar: los hilos de fondo lo dejan aquí y un timer de la UI lo vuelca por lotes.
         private readonly ConcurrentQueue<(ChatTarget Target, ChatMessage Message)> _display = new();
@@ -44,8 +47,9 @@ namespace TraductorNWN
         private volatile bool _mayusculas;
         private volatile bool _filtrarSistema;
         private volatile bool _logFound;
-        private volatile string? _lastOutgoing;
-        private int _outPending;
+        private IntPtr _ownHandle;
+        private string? _lastRawLine;
+        private long _lastRawAt;
         private int _statusTicks;
         private bool _suppressEvents;
 
@@ -70,6 +74,7 @@ namespace TraductorNWN
         private ThemedLabel _delayValue = null!;
         private ToggleSwitch _filterSwitch = null!;
         private ToggleSwitch _topSwitch = null!;
+        private ToggleSwitch _returnSwitch = null!;
         private Control[] _deeplRowControls = Array.Empty<Control>();
 
         private ThemedPanel _tabRow = null!;
@@ -299,6 +304,19 @@ namespace TraductorNWN
             _themeSeg.SelectedIndexChanged += ThemeSeg_SelectedIndexChanged;
             AddSettingsRow("Colores", _themeSeg, _themeSeg.Height);
 
+            // --- Después de enviar ---
+            var returnCell = NewCell(Dpi.S(26));
+            _returnSwitch = new ToggleSwitch { AccessibleName = "Volver al traductor después de enviar" };
+            _returnSwitch.CheckedChanged += ReturnSwitch_CheckedChanged;
+            var returnLabel = new ThemedLabel { Text = "Volver al traductor para seguir escribiendo", Font = UiFonts.Ui(10f), Tone = Tone.Text };
+            returnCell.Controls.AddRange(new Control[] { _returnSwitch, returnLabel });
+            returnCell.Resize += (s, e) =>
+            {
+                _returnSwitch.Location = Point.Empty;
+                returnLabel.SetBounds(Dpi.S(56), 0, Math.Max(10, returnCell.ClientSize.Width - Dpi.S(56)), Dpi.S(26));
+            };
+            AddSettingsRow("Después de enviar", returnCell, Dpi.S(26));
+
             // --- Ventana ---
             var windowCell = NewCell(Dpi.S(26));
             _topSwitch = new ToggleSwitch { AccessibleName = "Mantener la ventana siempre encima del juego" };
@@ -509,6 +527,7 @@ namespace TraductorNWN
 
                 _topSwitch.Checked = _settings.SiempreEncima;
                 TopMost = _settings.SiempreEncima;
+                _returnSwitch.Checked = _settings.VolverAlTraductor;
 
                 _mayusculas = _settings.Mayusculas;
                 _capsBtn.Checked = _mayusculas;
@@ -556,6 +575,7 @@ namespace TraductorNWN
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            _ownHandle = Handle;
             ApplyTitleBar();
         }
 
@@ -627,31 +647,43 @@ namespace TraductorNWN
         private void UpdateHint()
         {
             if (_hint == null) return;
-            int pending = Volatile.Read(ref _outPending);
+            OutgoingItem? last = null;
+            int pending;
+            lock (_pendingOut)
+            {
+                pending = _pendingOut.Count;
+                if (pending > 0) last = _pendingOut[^1];
+            }
+
             string text;
             Tone tone;
-
-            if (pending > 0 && _lastOutgoing is string last)
+            if (last != null)
             {
+                bool more = pending > 1;
                 if (_translator.CooldownRemaining.TotalSeconds >= 1)
                 {
                     var provider = _translator.ActiveProvider == Proveedor.DeepL ? "DeepL" : "Google";
-                    text = $"«{Shorten(last)}» está en cola: se envía en cuanto {provider} vuelva a responder.";
+                    text = $"«{Shorten(last.Text)}» está en cola: sale en cuanto {provider} vuelva a responder. Esc para cancelarlo.";
                     tone = Tone.Warn;
+                }
+                else if (last.Committed)
+                {
+                    text = more ? $"Escribiendo en el juego… ({pending} mensajes)" : "Escribiendo en el juego…";
+                    tone = Tone.Accent;
                 }
                 else
                 {
-                    text = pending > 1
-                        ? $"Enviando «{Shorten(last)}» y {pending - 1} más al juego…"
-                        : $"Enviando «{Shorten(last)}» al juego…";
+                    text = more
+                        ? $"«{Shorten(last.Text)}» y {pending - 1} más a punto de salir. Esc para cancelar el último."
+                        : $"«{Shorten(last.Text)}» a punto de salir. Esc para cancelarlo y corregirlo.";
                     tone = Tone.Accent;
                 }
             }
             else
             {
                 text = _settings.RetardoEnvioMs == 0
-                    ? "Se escribe en el juego en cuanto pulsas Enter."
-                    : $"Se escribe en el juego {FormatSeconds(_settings.RetardoEnvioMs)} después de pulsar Enter.";
+                    ? "Enter traduce y envía al juego. Ctrl+Enter lo envía sin traducir."
+                    : $"Enter traduce y envía al juego en {FormatSeconds(_settings.RetardoEnvioMs)}. Ctrl+Enter lo envía sin traducir.";
                 tone = Tone.Dim;
             }
 
@@ -697,6 +729,8 @@ namespace TraductorNWN
                 case Keys.Escape when _settingsPanel.Visible:
                     ToggleSettings(false);
                     return true;
+                case Keys.Escape when CancelLastPending():
+                    return true;
             }
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -717,6 +751,17 @@ namespace TraductorNWN
             RunBackground(() => OutgoingWorkerAsync(ct), "envío al juego");
 
             if (_translator.DeepLKey is string key) _ = RefreshUsageAsync(key);
+            CheckGameChatLogging();
+        }
+
+        // NWN:EE no guarda el chat en el log salvo que se active en settings.tml: sin eso no llega nada que traducir.
+        private void CheckGameChatLogging()
+        {
+            var (state, path) = GameSettings.CheckChatLogging();
+            if (state != ChatLogging.Disabled || path == null) return;
+            Notify("El juego no está guardando el chat en su log, así que no llegará nada que traducir. " +
+                   $"Cierra el juego, abre {path} y en la sección {GameSettings.SectionAll} pon «enabled = true». " +
+                   $"Deja «enabled = false» en {GameSettings.SectionText} para que no salga cada mensaje dos veces.", Tone.Warn);
         }
 
         private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
@@ -794,6 +839,13 @@ namespace TraductorNWN
         {
             foreach (var raw in lines)
             {
+                // La misma línea dos veces seguidas en el mismo instante: el juego la registró por partida
+                // doble (p. ej. con dos opciones de log activas). Se ignora la repetición.
+                long now = Environment.TickCount64;
+                if (raw == _lastRawLine && now - _lastRawAt < 1000 && raw.Trim().Length > 0) continue;
+                _lastRawLine = raw;
+                _lastRawAt = now;
+
                 ParsedLine? line;
                 try { line = _parser.Parse(raw); }
                 catch { continue; }
@@ -890,102 +942,202 @@ namespace TraductorNWN
         //  Salida: lo que escribe el usuario → inglés → juego
         // ======================================================================
 
-        private void Input_KeyDown(object? sender, KeyEventArgs e)
+        private sealed class OutgoingItem
         {
-            if (e.KeyCode != Keys.Enter) return;
-            e.SuppressKeyPress = true;
-            SendCurrent();
+            public required string Text { get; init; }
+            public required bool Raw { get; init; }       // Ctrl+Enter: sin traducir
+            public CancellationTokenSource Cts { get; } = new();
+            public bool Committed { get; set; }           // ya se está escribiendo en el juego: no se puede cancelar
         }
 
-        private void SendCurrent()
+        private void Input_KeyDown(object? sender, KeyEventArgs e)
         {
-            var textEs = _input.Input.Text.Trim();
-            if (textEs.Length == 0) return;
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                SendCurrent(raw: e.Control);
+            }
+        }
+
+        private void SendCurrent(bool raw = false)
+        {
+            var text = _input.Input.Text.Trim();
+            if (text.Length == 0) return;
             _input.Input.Clear();
 
             // No se traduce aquí: la ventana nunca se congela esperando a la red.
-            Interlocked.Increment(ref _outPending);
-            _lastOutgoing = textEs;
-            _outgoing.Writer.TryWrite(textEs);
+            var item = new OutgoingItem { Text = text, Raw = raw };
+            lock (_pendingOut) _pendingOut.Add(item);
+            _outgoing.Writer.TryWrite(item);
             UpdateHint();
+        }
+
+        // Esc: cancela el último mensaje que aún no ha empezado a escribirse en el juego
+        // y lo devuelve al campo de texto para poder corregirlo.
+        private bool CancelLastPending()
+        {
+            OutgoingItem? cancelled = null;
+            lock (_pendingOut)
+            {
+                for (int i = _pendingOut.Count - 1; i >= 0; i--)
+                {
+                    var it = _pendingOut[i];
+                    if (!it.Committed && !it.Cts.IsCancellationRequested)
+                    {
+                        it.Cts.Cancel();
+                        cancelled = it;
+                        break;
+                    }
+                }
+            }
+            if (cancelled == null) return false;
+
+            if (_input.Input.TextLength == 0)
+            {
+                _input.Input.Text = cancelled.Text;
+                _input.Input.SelectionStart = _input.Input.TextLength;
+            }
+            Notify($"Cancelado: «{Shorten(cancelled.Text)}».", Tone.Dim);
+            UpdateHint();
+            _input.Input.Focus();
+            return true;
         }
 
         private async Task OutgoingWorkerAsync(CancellationToken ct)
         {
-            await foreach (var textEs in _outgoing.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            await foreach (var item in _outgoing.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
                 try
                 {
-                    string textEn;
-                    try
-                    {
-                        textEn = await _translator.TranslateOneWithRetryAsync(textEs, "es", "en", TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                    {
-                        break;
-                    }
-                    catch (Exception ex)
-                    {
-                        Notify($"No se pudo traducir «{Shorten(textEs)}»: {ex.Message}", Tone.Warn);
-                        continue;
-                    }
-
-                    if (_mayusculas) textEn = textEn.ToUpperInvariant();
-
-                    // Cuando el juego escriba el mensaje en el log se mostrará tu español original sin otra petición.
-                    _translator.Remember(textEn, textEs, "en", "es");
-
-                    await Task.Delay(_settings.RetardoEnvioMs, ct).ConfigureAwait(false);
-
-                    // Se apunta antes de enviar para no perder un eco que llegue muy rápido.
-                    bool canConfirm = _logFound;
-                    var seen = canConfirm ? ExpectEcho(textEn) : null;
-                    RememberSent(textEn);
-
-                    string? error;
-                    try { error = GameSender.Send(textEn); }
-                    catch (Exception ex) { error = "Error al enviar al juego: " + ex.Message; }
-
-                    var status = SendStatus.Failed;
-                    if (error == null)
-                    {
-                        status = SendStatus.Sent;
-                        if (seen != null)
-                        {
-                            // El juego escribe tus propios mensajes en el log: si aparece, salió de verdad.
-                            var done = await Task.WhenAny(seen.Task, Task.Delay(4000, ct)).ConfigureAwait(false);
-                            status = done == seen.Task ? SendStatus.Confirmed : SendStatus.Unconfirmed;
-                        }
-                    }
-                    if (seen != null) ForgetEcho(seen);
-                    if (status == SendStatus.Failed) ForgetSent(textEn);
-
-                    Enqueue(ChatTarget.Ambos, BuildOwn(textEn, textEs, status));
-                    if (error != null) Notify(error, Tone.Warn);
-                    else if (status == SendStatus.Unconfirmed)
-                        Notify("Tu mensaje no aparece en el log del juego. Si se quedó escrito en el chat del juego, pulsa Enter allí.", Tone.Warn);
+                    if (!await SendOneAsync(item, ct).ConfigureAwait(false)) break;
                 }
                 finally
                 {
-                    Interlocked.Decrement(ref _outPending);
+                    lock (_pendingOut) _pendingOut.Remove(item);
+                    item.Cts.Dispose();
                 }
             }
         }
 
-        private void RememberSent(string textEn)
+        // Devuelve false solo si la aplicación se está cerrando.
+        private async Task<bool> SendOneAsync(OutgoingItem item, CancellationToken appToken)
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(appToken, item.Cts.Token);
+            var token = linked.Token;
+
+            var parts = OutgoingText.Split(item.Text);
+            string body = parts.Body;
+            bool translated = false;
+
+            try
+            {
+                if (parts.Translate && !item.Raw)
+                {
+                    try
+                    {
+                        body = await _translator.TranslateOneWithRetryAsync(parts.Body, "es", "en", TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
+                        translated = true;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        Notify($"No se pudo traducir «{Shorten(item.Text)}»: {ex.Message}. Pulsa Ctrl+Enter para enviarlo sin traducir.", Tone.Warn);
+                        RestoreToInput(item.Text);
+                        return true;
+                    }
+                }
+
+                if (_mayusculas && parts.IsChat) body = body.ToUpperInvariant();
+                body = OutgoingText.ForGame(body);
+
+                // Cuando el juego escriba el mensaje en el log se mostrará tu español original sin otra petición.
+                if (translated) _translator.Remember(body, parts.Body, "en", "es");
+
+                await Task.Delay(_settings.RetardoEnvioMs, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return !appToken.IsCancellationRequested; // cancelado con Esc: ya se avisó al cancelar
+            }
+
+            // A partir de aquí ya no se puede cancelar.
+            lock (_pendingOut)
+            {
+                if (item.Cts.IsCancellationRequested) return true;
+                item.Committed = true;
+            }
+
+            var textForGame = parts.Compose(body);
+            var echoKey = parts.IsChat ? Normalize(body) : null;
+
+            // Se apunta antes de enviar para no perder un eco que llegue muy rápido.
+            var seen = echoKey != null && _logFound ? ExpectEcho(echoKey) : null;
+            if (echoKey != null) RememberSent(echoKey);
+
+            string? error;
+            try { error = GameSender.Send(textForGame, _settings.VolverAlTraductor ? _ownHandle : IntPtr.Zero); }
+            catch (Exception ex) { error = "Error al enviar al juego: " + ex.Message; }
+
+            var status = SendStatus.Failed;
+            if (error == null)
+            {
+                status = SendStatus.Sent;
+                if (seen != null)
+                {
+                    // El juego escribe tus propios mensajes en el log: si aparece, salió de verdad.
+                    var done = await Task.WhenAny(seen.Task, Task.Delay(5000, appToken)).ConfigureAwait(false);
+                    if (appToken.IsCancellationRequested) return false;
+                    status = done == seen.Task ? SendStatus.Confirmed : SendStatus.Unconfirmed;
+                }
+            }
+            if (seen != null) ForgetEcho(seen);
+            if (status == SendStatus.Failed && echoKey != null) ForgetSent(echoKey);
+
+            Enqueue(ChatTarget.Ambos, BuildOwn(textForGame, item.Text, status));
+            if (error != null)
+            {
+                Notify(error, Tone.Warn);
+                RestoreToInput(item.Text);
+            }
+            else if (status == SendStatus.Unconfirmed)
+            {
+                Notify("Tu mensaje no aparece en el log del juego. Si se quedó escrito en el chat del juego, pulsa Enter allí.", Tone.Warn);
+            }
+            return true;
+        }
+
+        // Devuelve un mensaje que no pudo salir al campo de texto (si está vacío) para reintentarlo.
+        private void RestoreToInput(string text)
+        {
+            if (IsDisposed) return;
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    if (_input.Input.TextLength != 0) return;
+                    _input.Input.Text = text;
+                    _input.Input.SelectionStart = _input.Input.TextLength;
+                });
+            }
+            catch (InvalidOperationException) { /* ventana cerrándose */ }
+        }
+
+        // Tu mensaje en el log puede llevar algo delante (p. ej. el servidor añade una etiqueta):
+        // basta con que lo contenga entero.
+        private static bool EchoMatches(string logKey, string sentKey) =>
+            logKey == sentKey || (sentKey.Length >= 4 && logKey.Contains(sentKey, StringComparison.Ordinal));
+
+        private void RememberSent(string key)
         {
             long now = Environment.TickCount64;
             lock (_recentSent)
             {
                 _recentSent.RemoveAll(x => now - x.At > 60_000);
-                _recentSent.Add((Normalize(textEn), now));
+                _recentSent.Add((key, now));
             }
         }
 
-        private void ForgetSent(string textEn)
+        private void ForgetSent(string key)
         {
-            var key = Normalize(textEn);
             lock (_recentSent)
             {
                 int i = _recentSent.FindLastIndex(x => x.Text == key);
@@ -993,10 +1145,10 @@ namespace TraductorNWN
             }
         }
 
-        private TaskCompletionSource<bool> ExpectEcho(string textEn)
+        private TaskCompletionSource<bool> ExpectEcho(string key)
         {
             var seen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (_awaitingEcho) _awaitingEcho.Add((Normalize(textEn), seen));
+            lock (_awaitingEcho) _awaitingEcho.Add((key, seen));
             return seen;
         }
 
@@ -1012,7 +1164,7 @@ namespace TraductorNWN
             var key = Normalize(text);
             lock (_awaitingEcho)
             {
-                int i = _awaitingEcho.FindIndex(x => x.Key == key);
+                int i = _awaitingEcho.FindIndex(x => EchoMatches(key, x.Key));
                 if (i >= 0)
                 {
                     seen = _awaitingEcho[i].Seen;
@@ -1029,7 +1181,7 @@ namespace TraductorNWN
             lock (_recentSent)
             {
                 _recentSent.RemoveAll(x => now - x.At > 60_000);
-                int i = _recentSent.FindIndex(x => x.Text == key);
+                int i = _recentSent.FindIndex(x => EchoMatches(key, x.Text));
                 if (i < 0) return false;
                 _recentSent.RemoveAt(i);
                 return true;
@@ -1056,6 +1208,13 @@ namespace TraductorNWN
             _filtrarSistema = _filterSwitch.Checked;
             _filterLink.Visible = _filtrarSistema;
             _settings.FiltrarSistema = _filtrarSistema;
+            ScheduleSave();
+        }
+
+        private void ReturnSwitch_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            _settings.VolverAlTraductor = _returnSwitch.Checked;
             ScheduleSave();
         }
 
