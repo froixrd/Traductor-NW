@@ -16,7 +16,8 @@ Neverwinter Nights: Enhanced Edition.
 - El envío simula el teclado con códigos de tecla reales (no `SendKeys`), así el
   juego reconoce el Enter. El texto viaja como caracteres Unicode: llega bien con
   cualquier distribución de teclado (ñ, tildes, ¿ ¡) y nunca dispara atajos del juego.
-- Traduce con Google Translate (gratis, sin clave), DeepL o Microsoft Translator.
+- Traduce con **Microsoft Translator** (gratis hasta 2 millones de caracteres al
+  mes) y, cuando se acaba esa cuota o no hay clave, con **Google Translate**.
   Ver [Qué traductor usar](#qué-traductor-usar).
 
 ## Escribir en el juego
@@ -74,13 +75,21 @@ Neverwinter Nights: Enhanced Edition.
 - **Solo el chat de jugadores** (activado por defecto): el combate y los mensajes
   del sistema aparecen sin traducir en la pestaña Inglés. Es lo que más
   peticiones ahorra en las peleas.
-- Si DeepL o Microsoft se quedan sin cuota o la clave falla, sigue con Google.
-  Y al revés: si Google te bloquea y tienes otra clave guardada, se usa esa
+- **Microsoft primero, Google de respaldo.** Si se acaba la cuota gratuita de
+  Microsoft, el mismo mensaje se traduce con Google sin perder nada, se avisa una
+  vez y cada hora se vuelve a probar Microsoft; en cuanto se renueva, se vuelve a
+  usar solo. Si la clave deja de valer, se usa Google hasta que la corrijas.
+  Si Microsoft está en pausa por exceso de peticiones, también se tira de Google.
+- Y al revés: si Google te bloquea y tienes otra clave guardada, se usa esa
   mientras dura el bloqueo.
+- El indicador de arriba dice qué traductor se está usando y por qué no el
+  principal (por ejemplo "Google Translate · Microsoft sin cuota").
 - Google se usa como mucho una vez por segundo (lo que llegue entre medias va en
   la misma petición). Sus bloqueos con 403 o con la página de "tráfico inusual"
   ahora también se respetan con una pausa (antes se seguía insistiendo y el
   bloqueo duraba más).
+- Al empezar una partida nueva (el juego rota el log) ya **no** se vuelve a
+  traducir la sesión anterior entera.
 
 ## Calidad de la traducción
 
@@ -93,24 +102,34 @@ Neverwinter Nights: Enhanced Edition.
 
 ## Qué traductor usar
 
+El traductor por defecto es **Microsoft Translator** y el de respaldo **Google**.
+
 | Traductor | Coste | Notas |
 |---|---|---|
-| **Google Translate** | Gratis, sin clave | Servicio público no oficial: bloquea si recibe muchas peticiones seguidas. Bien para empezar. |
-| **Microsoft Translator** | 2 millones de caracteres al mes gratis (plan F0) | Oficial y estable. Lo más recomendable si Google te da problemas. |
-| **DeepL** | Ha cambiado sus planes; revisa en su web qué ofrece ahora | La mejor calidad en frases naturales. |
+| **Microsoft Translator** (principal) | Gratis hasta 2 millones de caracteres al mes con el plan F0 | Oficial y estable. Cuando se acaba la cuota responde con un error (no cobra) y la app pasa a Google. |
+| **Google Translate** (respaldo) | Gratis, sin clave | Servicio público no oficial: puede bloquear si recibe muchas peticiones seguidas. |
+| **DeepL** | Ha cambiado sus planes; revisa en su web qué ofrece ahora | Muy buena calidad. Opcional. |
+
+2 millones de caracteres son unas 30.000 líneas de chat de tamaño medio. En
+Ajustes verás un contador aproximado de lo que lleva enviado la app este mes
+(Microsoft no da el consumo exacto con la clave).
 
 **Cómo conseguir la clave de Microsoft Translator:**
 
-1. Crea una cuenta en https://portal.azure.com (Azure pide verificar con una
-   tarjeta, pero el plan gratuito F0 no cobra).
+1. Crea una cuenta en https://portal.azure.com. Azure pide una tarjeta para
+   verificar que eres tú, pero no cobra nada al registrarte.
 2. *Crear un recurso* → busca **Translator** → *Crear*.
-3. Plan de tarifa: **Free F0**. Región: **Global** (o la más cercana).
-4. Cuando esté creado, abre *Claves y punto de conexión* y copia la **Clave 1** y
-   la **Ubicación/Región**.
-5. En el traductor: Ajustes → Traductor → **Microsoft**, pega la clave, escribe la
-   región (déjala vacía si elegiste Global) y pulsa **Comprobar**.
-- Al empezar una partida nueva (el juego rota el log) ya **no** se vuelve a
-  traducir la sesión anterior entera.
+3. Plan de tarifa: **Free F0** (importante: el plan S1 es de pago). Región:
+   **Global**.
+4. Cuando esté creado, abre *Claves y punto de conexión* y copia la **Clave 1**.
+5. En el traductor: Ajustes → Traductor → **Microsoft**, pega la clave (la región
+   déjala vacía si elegiste Global) y pulsa **Comprobar**.
+
+**Importante sobre la cuenta de Azure:** la cuenta gratuita de prueba dura 30
+días. Pasado ese tiempo, Azure pide pasarla a *pago por uso*; si no lo haces, la
+cuenta y sus recursos se desactivan y la clave deja de funcionar (la app seguiría
+traduciendo con Google). Pasar a pago por uso no cobra nada mientras solo tengas
+el recurso Translator con el plan F0.
 
 ## Cómo generar el .exe
 
@@ -133,8 +152,9 @@ Se guarda en `%AppData%\TraductorNWN\config.json` (todo se cambia desde Ajustes)
 
 - `DeepLKeyCifrada`: la clave de DeepL, cifrada para tu usuario de Windows (la
   versión anterior la guardaba en texto plano junto al .exe; se migra sola).
-- `Proveedor`: `Google`, `DeepL` o `Microsoft`.
+- `Proveedor`: `Microsoft` (por defecto), `Google` o `DeepL`.
 - `MicrosoftKeyCifrada`, `MicrosoftRegion`: clave (cifrada) y región de Microsoft Translator.
+- `MicrosoftMes`, `MicrosoftCaracteres`: contador aproximado de caracteres enviados a Microsoft este mes.
 - `NoTraducir`: palabras que no se traducen.
 - `VolverAlTraductor`, `TeclaRapida`, `AvisarPrivados`, `Compacto`.
 - `OpacidadInactiva`: opacidad (%) cuando no estás usando la ventana (100 = sin transparencia).

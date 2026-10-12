@@ -31,16 +31,22 @@ namespace TraductorNWN
         public TransientTranslationException(string message, Exception? inner = null) : base(message, inner) { }
     }
 
-    // Un proveedor con clave no se puede usar (clave inválida o cuota agotada): se sigue con otro.
+    // Un proveedor con clave no se puede usar: se sigue con Google.
+    //  QuotaExhausted = se acabó la cuota gratuita (vuelve sola más adelante);
+    //  si no, la clave no es válida (hay que corregirla en Ajustes).
     internal sealed class ProviderUnavailableException : TranslationException
     {
-        public ProviderUnavailableException(Proveedor provider, string message) : base(message)
+        public ProviderUnavailableException(Proveedor provider, string message, bool quotaExhausted = false) : base(message)
         {
             Provider = provider;
+            QuotaExhausted = quotaExhausted;
         }
 
         public Proveedor Provider { get; }
+        public bool QuotaExhausted { get; }
     }
+
+    internal enum ProviderState { Ok, NoKey, InvalidKey, QuotaExhausted }
 
     // La traducción agrupada de Google no devolvió el mismo número de líneas.
     internal sealed class SplitMismatchException : TranslationException
@@ -55,7 +61,8 @@ namespace TraductorNWN
     //  - agrupa varias líneas en UNA petición;
     //  - caché LRU para no repetir peticiones;
     //  - un RateGate por proveedor con espera progresiva y respeto del Retry-After;
-    //  - si el proveedor elegido está bloqueado o sin cuota, usa otro que tenga configurado;
+    //  - si el proveedor elegido está bloqueado o sin cuota, usa Google (y si Google está bloqueado, otro configurado);
+    //  - cuando se acaba la cuota gratuita de Microsoft/DeepL, vuelve a probarlo cada hora;
     //  - abreviaturas de chat escritas completas y palabras protegidas que nunca se traducen.
     internal sealed class TranslationService : IDisposable
     {
@@ -66,8 +73,16 @@ namespace TraductorNWN
         {
             public volatile string? Key;
             public volatile string? Region;
-            public volatile string? DisabledReason;
+            public volatile string? DisabledReason;   // clave no válida: hasta que se compruebe otra
+            public long ExhaustedUntilTicks;          // cuota agotada: no se usa hasta esta hora (UTC)
+            public int QuotaNotified;                 // 1 = ya se avisó de la cuota agotada
         }
+
+        // Cada cuánto se vuelve a probar un proveedor sin cuota (la cuota gratuita se renueva sola).
+        private static readonly TimeSpan QuotaRetry = TimeSpan.FromHours(1);
+
+        // Orden de respaldo: Google primero (gratis y sin clave), luego los que tengan clave.
+        private static readonly Proveedor[] FallbackOrder = { Proveedor.Google, Proveedor.Microsoft, Proveedor.DeepL };
 
         private readonly HttpClient _http;
         private readonly LruCache<string, string> _cache = new(5000, StringComparer.Ordinal);
@@ -83,8 +98,14 @@ namespace TraductorNWN
         private volatile Proveedor _preferred = Proveedor.Google;
         private volatile ProtectedTerms _terms = ProtectedTerms.Empty;
 
-        // Avisos para mostrar al usuario (p. ej. "DeepL sin cuota, se usa Google").
-        public event Action<string>? Notice;
+        // Avisos para mostrar al usuario: (texto, esAviso). P. ej. "Microsoft sin cuota, se usa Google".
+        public event Action<string, bool>? Notice;
+
+        // Caracteres enviados a un proveedor en una traducción correcta (para el contador de uso).
+        public event Action<Proveedor, int>? CharactersUsed;
+
+        // Reloj inyectable para las pruebas.
+        internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
         public TranslationService() : this(new SocketsHttpHandler
         {
@@ -125,12 +146,26 @@ namespace TraductorNWN
             st.Key = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
             st.Region = string.IsNullOrWhiteSpace(region) ? null : region.Trim();
             st.DisabledReason = null;
+            Interlocked.Exchange(ref st.ExhaustedUntilTicks, 0);
+            Interlocked.Exchange(ref st.QuotaNotified, 0);
         }
 
         public string? GetKey(Proveedor provider) => provider == Proveedor.Google ? null : State(provider).Key;
 
-        public bool IsUsable(Proveedor provider) =>
-            provider == Proveedor.Google || (State(provider).Key != null && State(provider).DisabledReason == null);
+        public bool IsUsable(Proveedor provider) => GetState(provider) == ProviderState.Ok;
+
+        public ProviderState GetState(Proveedor provider)
+        {
+            if (provider == Proveedor.Google) return ProviderState.Ok;
+            var st = State(provider);
+            if (st.Key == null) return ProviderState.NoKey;
+            if (st.DisabledReason != null) return ProviderState.InvalidKey;
+            if (UtcNow().Ticks < Interlocked.Read(ref st.ExhaustedUntilTicks)) return ProviderState.QuotaExhausted;
+            return ProviderState.Ok;
+        }
+
+        // ¿El proveedor está en pausa por exceso de peticiones (429)?
+        public bool IsPaused(Proveedor provider) => Gate(provider).CooldownRemaining > TimeSpan.FromSeconds(2);
 
         // Compatibilidad: poner una clave de DeepL la convierte en el proveedor preferido.
         public string? DeepLKey
@@ -169,16 +204,19 @@ namespace TraductorNWN
 
         private Proveedor ChooseProvider()
         {
+            // El elegido, si tiene clave válida y cuota; si no, Google.
             var preferred = IsUsable(_preferred) ? _preferred : Proveedor.Google;
             var wait = Gate(preferred).CooldownRemaining;
             if (wait <= TimeSpan.FromSeconds(2)) return preferred;
 
-            // El elegido está en pausa larga (bloqueo): mientras tanto, otro que esté configurado y libre.
+            // En pausa larga (bloqueo o exceso de peticiones): mientras tanto, el primero libre en el
+            // orden de respaldo (Google primero).
             var best = preferred;
-            foreach (var p in new[] { Proveedor.Microsoft, Proveedor.DeepL, Proveedor.Google })
+            foreach (var p in FallbackOrder)
             {
                 if (p == preferred || !IsUsable(p)) continue;
                 var w = Gate(p).CooldownRemaining;
+                if (w <= TimeSpan.FromSeconds(2)) return p;
                 if (w < wait)
                 {
                     best = p;
@@ -349,6 +387,8 @@ namespace TraductorNWN
                     _ => await GoogleAsync(prepared, source, target, ct).ConfigureAwait(false)
                 };
                 gate.ReportSuccess();
+                OnProviderWorked(provider);
+                CharactersUsed?.Invoke(provider, prepared.Sum(t => t.Length));
             }
             catch (RateLimitedException ex)
             {
@@ -362,8 +402,8 @@ namespace TraductorNWN
             }
             catch (ProviderUnavailableException ex)
             {
-                State(ex.Provider).DisabledReason = ex.Message;
-                Notice?.Invoke($"{Name(ex.Provider)} no disponible ({ex.Message}). Se usa Google Translate hasta que vuelvas a comprobar la clave.");
+                MarkUnavailable(ex);
+                // El mismo lote se traduce enseguida con el siguiente (Google): no se pierde ningún mensaje.
                 return await TranslateChunkAsync(chunk, source, target, ct).ConfigureAwait(false);
             }
             catch (SplitMismatchException) when (chunk.Count > 1)
@@ -384,6 +424,33 @@ namespace TraductorNWN
                 _cache.Set(CacheKey(chunk[i], source, target), r);
             }
             return result;
+        }
+
+        private void MarkUnavailable(ProviderUnavailableException ex)
+        {
+            var st = State(ex.Provider);
+            var name = Name(ex.Provider);
+            if (ex.QuotaExhausted)
+            {
+                Interlocked.Exchange(ref st.ExhaustedUntilTicks, (UtcNow() + QuotaRetry).Ticks);
+                if (Interlocked.Exchange(ref st.QuotaNotified, 1) == 0)
+                    Notice?.Invoke($"Se ha acabado la cuota gratuita de {name}. Mientras tanto se traduce con Google; " +
+                                   $"cada hora se vuelve a probar {name} y se usa en cuanto se renueve.", true);
+            }
+            else
+            {
+                st.DisabledReason = ex.Message;
+                Notice?.Invoke($"{name} no acepta la clave ({ex.Message}). Se traduce con Google hasta que la corrijas en Ajustes.", true);
+            }
+        }
+
+        private void OnProviderWorked(Proveedor provider)
+        {
+            if (provider == Proveedor.Google) return;
+            var st = State(provider);
+            Interlocked.Exchange(ref st.ExhaustedUntilTicks, 0);
+            if (Interlocked.Exchange(ref st.QuotaNotified, 0) == 1)
+                Notice?.Invoke($"{Name(provider)} vuelve a estar disponible: se traduce otra vez con {Name(provider)}.", false);
         }
 
         // Endpoint público no oficial (translate.googleapis.com, client=gtx).
@@ -567,17 +634,39 @@ namespace TraductorNWN
                     if (status is 403 or 503) throw new RateLimitedException(provider, retryAfter);
                     break;
                 case Proveedor.DeepL:
-                    if (status == 456) throw new ProviderUnavailableException(provider, "cuota de caracteres agotada");
+                    if (status == 456) throw new ProviderUnavailableException(provider, "cuota de caracteres agotada", quotaExhausted: true);
                     if (status is 401 or 403) throw new ProviderUnavailableException(provider, "clave no válida");
                     break;
                 case Proveedor.Microsoft:
                     if (status == 401) throw new ProviderUnavailableException(provider, "clave o región no válidas");
-                    if (status == 403) throw new ProviderUnavailableException(provider, "cuota gratuita agotada o clave sin permiso");
+                    if (status == 403)
+                    {
+                        // 403001 = se acabó la cuota gratuita (plan F0): no cobra, solo deja de traducir hasta que se renueva.
+                        var code = MicrosoftErrorCode(detail);
+                        bool quota = code == 403001 || (code == null && detail.Contains("quota", StringComparison.OrdinalIgnoreCase));
+                        throw quota
+                            ? new ProviderUnavailableException(provider, "cuota gratuita agotada", quotaExhausted: true)
+                            : new ProviderUnavailableException(provider, "la clave no tiene permiso o la suscripción está desactivada");
+                    }
                     break;
             }
 
             if (status >= 500) throw new TransientTranslationException($"el servidor respondió {status}");
             throw new TranslationException($"{Name(provider)} respondió {status}: {Shorten(detail)}");
+        }
+
+        // Código de error de Microsoft: {"error":{"code":403001,"message":"..."}}
+        private static int? MicrosoftErrorCode(string body)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("error", out var err) &&
+                    err.TryGetProperty("code", out var code) && code.TryGetInt32(out var value))
+                    return value;
+            }
+            catch (JsonException) { /* sin cuerpo JSON */ }
+            return null;
         }
 
         private static TimeSpan? GetRetryAfter(HttpResponseMessage resp)

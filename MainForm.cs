@@ -16,6 +16,12 @@ namespace TraductorNWN
         private static readonly NumberFormatInfo EsNumbers = new() { NumberGroupSeparator = ".", NumberDecimalSeparator = "," };
         private static readonly string[] TabNames = { "Ambos", "Inglés", "Español" };
 
+        // Orden de las opciones del selector de traductor (Microsoft primero: es el recomendado).
+        private static readonly Proveedor[] SegProviders = { Proveedor.Microsoft, Proveedor.Google, Proveedor.DeepL };
+
+        // Caracteres gratis al mes del plan F0 de Microsoft Translator.
+        private const long MicrosoftFreeChars = 2_000_000;
+
         // ---------- Servicios ----------
         private readonly AppSettings _settings = AppSettings.Load();
         private readonly TranslationService _translator = new();
@@ -50,6 +56,8 @@ namespace TraductorNWN
         private bool _hotkeyRegistered;
         private IntPtr _hotkeyReturnTo;   // ventana desde la que se llamó con la tecla rápida (el juego)
         private long _lastAlertAt;
+        private volatile bool _usageDirty;
+        private DeepLUsage? _deeplUsage;
 
         private AppTheme _theme;
         private volatile bool _mayusculas;
@@ -146,7 +154,13 @@ namespace TraductorNWN
             });
             _incoming = new IncomingPipeline(_translator, ShowTranslated, ShowUntranslated,
                 (msg, warn) => Notify(msg, warn ? Tone.Warn : Tone.Ok));
-            _translator.Notice += msg => Notify(msg, Tone.Warn);
+            _translator.Notice += (msg, warn) => Notify(msg, warn ? Tone.Warn : Tone.Ok);
+            _translator.CharactersUsed += (provider, chars) =>
+            {
+                if (provider != Proveedor.Microsoft) return;
+                _settings.AddMicrosoftUsage(chars);
+                _usageDirty = true;
+            };
 
             LoadSettingsIntoUi();
             ApplyTheme(_theme);
@@ -179,7 +193,11 @@ namespace TraductorNWN
             Resize += (s, e) => LayoutSettings();
 
             Load += MainForm_Load;
-            Shown += (s, e) => _input.Input.Focus();
+            Shown += (s, e) =>
+            {
+                if (_settingsPanel.Visible && _keyCell.Visible && _keyBox.Input.TextLength == 0) _keyBox.Input.Focus();
+                else _input.Input.Focus();
+            };
             FormClosing += MainForm_FormClosing;
         }
 
@@ -257,9 +275,8 @@ namespace TraductorNWN
 
             // --- Traductor ---
             _providerSeg = new SegmentedControl { Anchor = AnchorStyles.Left | AnchorStyles.Top };
-            _providerSeg.AddOption("Google Translate");
-            _providerSeg.AddOption("DeepL");
-            _providerSeg.AddOption("Microsoft");
+            foreach (var provider in SegProviders)
+                _providerSeg.AddOption(provider == Proveedor.Google ? "Google Translate" : TranslationService.Name(provider));
             _providerSeg.SelectedIndexChanged += ProviderSeg_SelectedIndexChanged;
             AddSettingsRow("Traductor", _providerSeg, _providerSeg.Height);
 
@@ -647,9 +664,8 @@ namespace TraductorNWN
                 _translator.SetKey(Proveedor.Microsoft, _settings.MicrosoftKey, _settings.MicrosoftRegion);
                 var preferred = ParseProvider(_settings.Proveedor);
                 _translator.Preferred = preferred;
-                _providerSeg.SetSelectedSilently((int)preferred);
+                _providerSeg.SetSelectedSilently(Array.IndexOf(SegProviders, preferred));
                 ShowProviderRows(preferred);
-                _usageLabel.Text = "Pulsa Comprobar para ver el consumo de este mes.";
 
                 _glossaryBox.Input.Text = string.Join(", ", _settings.NoTraducir);
                 _translator.SetProtectedTerms(_settings.NoTraducir);
@@ -683,18 +699,18 @@ namespace TraductorNWN
         }
 
         private static Proveedor ParseProvider(string? name) =>
-            Enum.TryParse<Proveedor>(name, true, out var p) && Enum.IsDefined(p) ? p : Proveedor.Google;
+            Enum.TryParse<Proveedor>(name, true, out var p) && Enum.IsDefined(p) ? p : Proveedor.Microsoft;
 
-        private Proveedor SelectedProvider => (Proveedor)Math.Clamp(_providerSeg.SelectedIndex, 0, 2);
+        private Proveedor SelectedProvider => SegProviders[Math.Clamp(_providerSeg.SelectedIndex, 0, SegProviders.Length - 1)];
 
-        // Muestra la fila de la clave (DeepL o Microsoft) y el consumo (solo DeepL) según el traductor elegido.
+        // Muestra la fila de la clave y la del consumo según el traductor elegido.
         private void ShowProviderRows(Proveedor p)
         {
             bool keyed = p != Proveedor.Google;
             _keyLabel.Visible = keyed;
             _keyCell.Visible = keyed;
-            _usageRowLabel.Visible = p == Proveedor.DeepL;
-            _usageCell.Visible = p == Proveedor.DeepL;
+            _usageRowLabel.Visible = keyed;
+            _usageCell.Visible = keyed;
             _regionBox.Visible = p == Proveedor.Microsoft;
 
             if (keyed)
@@ -706,20 +722,38 @@ namespace TraductorNWN
                 _keyBox.Input.Text = (deepl ? _settings.DeepLKey : _settings.MicrosoftKey) ?? "";
                 _regionBox.Input.Text = _settings.MicrosoftRegion ?? "";
 
-                if (_keyBox.Input.TextLength == 0)
+                switch (_translator.GetState(p))
                 {
-                    SetKeyStatus(deepl
-                        ? "Pega tu clave y pulsa Comprobar. Mientras tanto se usa Google."
-                        : "Pega la clave y la región de tu recurso Translator de Azure y pulsa Comprobar. Mientras tanto se usa Google.",
-                        Tone.Dim);
+                    case ProviderState.NoKey:
+                        SetKeyStatus(deepl
+                            ? "Pega tu clave y pulsa Comprobar. Mientras tanto se usa Google."
+                            : "Pega la clave de tu recurso Translator (plan gratuito F0). Mientras tanto se usa Google.",
+                            Tone.Dim);
+                        break;
+                    case ProviderState.QuotaExhausted:
+                        SetKeyStatus("Cuota gratuita agotada: se usa Google y se vuelve a probar cada hora.", Tone.Warn);
+                        break;
+                    case ProviderState.InvalidKey:
+                        SetKeyStatus("La clave guardada ha dejado de funcionar: pulsa Comprobar o pega otra.", Tone.Warn);
+                        break;
+                    default:
+                        SetKeyStatus("Clave guardada. Si se acaba la cuota, se usa Google.", Tone.Dim);
+                        break;
                 }
-                else if (_translator.IsUsable(p))
+
+                if (deepl)
                 {
-                    SetKeyStatus("Clave guardada.", Tone.Dim);
+                    if (_deeplUsage is DeepLUsage usage) ShowUsage(usage);
+                    else
+                    {
+                        _usageBar.Value = 0;
+                        _usageLabel.Text = "Pulsa Comprobar para ver el consumo de este mes.";
+                        _usageLabel.Tone = Tone.Dim;
+                    }
                 }
                 else
                 {
-                    SetKeyStatus("La clave guardada ha dejado de funcionar: pulsa Comprobar o pega otra.", Tone.Warn);
+                    ShowMicrosoftUsage();
                 }
                 LayoutKeyCell();
             }
@@ -875,6 +909,32 @@ namespace TraductorNWN
             var cooldown = _translator.CooldownRemaining;
             int pending = _incoming.Pending;
 
+            // Si no se está usando el traductor elegido, el motivo (sin clave, sin cuota, en pausa…).
+            string note = "";
+            var noteTone = Tone.Dim;
+            var preferred = _translator.Preferred;
+            if (preferred != active && preferred != Proveedor.Google)
+            {
+                var name = TranslationService.Name(preferred);
+                switch (_translator.GetState(preferred))
+                {
+                    case ProviderState.NoKey:
+                        note = "sin clave de " + name;
+                        break;
+                    case ProviderState.QuotaExhausted:
+                        note = name + " sin cuota";
+                        noteTone = Tone.Warn;
+                        break;
+                    case ProviderState.InvalidKey:
+                        note = "clave de " + name + " no válida";
+                        noteTone = Tone.Warn;
+                        break;
+                    default:
+                        if (_translator.IsPaused(preferred)) note = name + " en pausa";
+                        break;
+                }
+            }
+
             bool resized;
             if (cooldown.TotalSeconds >= 1)
             {
@@ -891,7 +951,7 @@ namespace TraductorNWN
             }
             else
             {
-                resized = _pill.SetState(Tone.Ok, longName, Tone.Text, "", Tone.Dim, warn: false);
+                resized = _pill.SetState(Tone.Ok, longName, Tone.Text, note, noteTone, warn: false);
             }
             if (resized) LayoutHeader();
         }
@@ -1005,6 +1065,16 @@ namespace TraductorNWN
             if (_translator.Preferred == Proveedor.DeepL && _translator.GetKey(Proveedor.DeepL) is string key)
                 _ = RefreshUsageAsync(key);
             CheckGameChatLogging();
+            CheckMicrosoftSetup();
+        }
+
+        // Microsoft es el traductor principal: si aún no hay clave, se explica y (la primera vez) se abren los ajustes.
+        private void CheckMicrosoftSetup()
+        {
+            if (_translator.Preferred != Proveedor.Microsoft || _translator.GetKey(Proveedor.Microsoft) != null) return;
+            Notify("Ahora se traduce con Google. Para usar Microsoft Translator (gratis hasta 2 millones de caracteres al mes) " +
+                   "pega tu clave en Ajustes → Traductor. Los pasos para conseguirla están en el README del proyecto.", Tone.Accent);
+            if (_settings.MigradoAMicrosoft) ToggleSettings(true);
         }
 
         // NWN:EE no guarda el chat en el log salvo que se active en settings.tml: sin eso no llega nada que traducir.
@@ -1083,6 +1153,13 @@ namespace TraductorNWN
                 _statusTicks = 0;
                 UpdateStatus();
                 UpdateHint();
+
+                if (_usageDirty)
+                {
+                    _usageDirty = false;
+                    if (!_saveTimer.Enabled) _saveTimer.Start(); // sin retrasarlo: hay tráfico continuo
+                    if (_usageCell.Visible && SelectedProvider == Proveedor.Microsoft) ShowMicrosoftUsage();
+                }
             }
         }
 
@@ -1713,9 +1790,21 @@ namespace TraductorNWN
             _keyStatus.Tone = tone;
         }
 
+        // Microsoft no informa del consumo con la clave: se cuenta lo que envía esta app este mes.
+        private void ShowMicrosoftUsage()
+        {
+            long used = _settings.MicrosoftUsageThisMonth();
+            _usageBar.AccessibleName = "Caracteres enviados a Microsoft este mes";
+            _usageBar.Value = (double)used / MicrosoftFreeChars;
+            _usageLabel.Text = $"≈ {FormatCount(used)} de {FormatCount(MicrosoftFreeChars)} gratis (contados por esta app)";
+            _usageLabel.Tone = used >= MicrosoftFreeChars * 0.9 ? Tone.Warn : Tone.Text;
+        }
+
         private void ShowUsage(DeepLUsage usage)
         {
             if (IsDisposed) return;
+            _deeplUsage = usage;
+            _usageBar.AccessibleName = "Caracteres de DeepL usados este mes";
             if (usage.Limit > 0)
             {
                 _usageBar.Value = (double)usage.Count / usage.Limit;
