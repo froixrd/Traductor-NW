@@ -142,17 +142,26 @@ el recurso Translator con el plan F0.
 ## Cómo generar el .exe
 
 **Sin instalar nada:** GitHub lo compila solo. Cada vez que cambia el código en
-`master`, el flujo *Compilar exe* (pestaña **Actions**) genera
-`dist\TraductorNWN.exe` y lo guarda en el repositorio. También se puede lanzar a
-mano desde Actions → Compilar exe → *Run workflow*.
+`master`, el flujo *Compilar exe* (pestaña **Actions**) genera dos versiones y las
+guarda en `dist\`. También se puede lanzar a mano desde Actions → Compilar exe →
+*Run workflow*.
+
+- `TraductorNWN.exe` (unos 65 MB): lleva .NET dentro y funciona en cualquier
+  Windows de 64 bits sin instalar nada.
+- `TraductorNWN-ligero.exe` (menos de 1 MB): el mismo programa sin .NET dentro.
+  Necesita el **Runtime de escritorio de .NET** 8 o posterior (mejor el 10, que
+  tiene soporte hasta 2028): https://dotnet.microsoft.com/download/dotnet/10.0 →
+  *.NET Desktop Runtime* → Windows x64. Si falta, al abrirlo Windows ofrece
+  descargarlo. Es la versión que menos recelo da a los antivirus.
+
+Antes de guardarlos, el flujo comprueba que cada uno arranca solo (sin DLL al
+lado) y los analiza con Microsoft Defender actualizado; el resultado queda en
+`dist\analisis-antivirus.txt`.
 
 **En tu PC:**
 
 1. Instala el SDK de .NET 8: https://dotnet.microsoft.com/download/dotnet/8.0 (elige "SDK").
 2. Haz doble clic en `build.bat`.
-
-En ambos casos el ejecutable es un único archivo portable que no necesita .NET
-instalado.
 
 ## Configuración
 
@@ -189,7 +198,21 @@ Los errores inesperados se registran en `%AppData%\TraductorNWN\errores.log`.
   También vale "Más información" → "Ejecutar de todas formas". Firmar el
   programa requiere comprar un certificado y, aun firmado, Windows sigue
   avisando hasta que el programa gana reputación con las descargas.
+- **El antivirus lo marca como sospechoso.** Es un falso positivo habitual con
+  programas nuevos, sin firma y que simulan el teclado (para escribir en el
+  juego). Se ha quitado lo que más suele disparar las alarmas: el .exe ya no saca
+  DLL a la carpeta temporal al arrancar ni lee el estado del teclado de todo el
+  sistema. Si aun así salta:
+  1. Prueba `TraductorNWN-ligero.exe`.
+  2. Mira en `dist\analisis-antivirus.txt` qué dice Microsoft Defender.
+  3. Envía el .exe a tu antivirus como falso positivo. Microsoft:
+     https://www.microsoft.com/en-us/wdsi/filesubmission → *Software developer* →
+     *Incorrectly detected as malware/malicious*. Suelen revisarlo en pocos días y
+     desde entonces deja de saltar para todo el mundo (hay que repetirlo con cada
+     versión nueva del .exe si vuelve a saltar).
 - El icono (`app.ico`) se genera con `herramientas/generar_icono.py`.
+- `herramientas/probar-arranque.ps1` y `herramientas/analizar-defender.ps1` son
+  las comprobaciones que hace GitHub al compilar.
 - La ventana del juego se busca por el proceso `nwmain.exe` y, si no, por título
   (sin confundirla con la propia ventana del traductor ni con navegadores).
 - Si el juego se ejecuta como administrador, el traductor también tiene que

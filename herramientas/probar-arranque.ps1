@@ -1,7 +1,7 @@
 # Se ejecuta en el Windows de GitHub después de compilar (ver .github/workflows/compilar.yml).
 #
 # Copia cada .exe SOLO en una carpeta vacía, lo abre, espera unos segundos y apunta:
-#   - si sigue abierto y sin errores (en errors.log),
+#   - si sigue abierto y sin errores (en errores.log),
 #   - el título de su ventana y con qué .NET se ejecuta,
 #   - cuántos archivos sacó a la carpeta temporal al arrancar (lo que vigilan los antivirus).
 # Guarda una captura de pantalla de cada uno y empieza el informe dist/analisis-antivirus.txt.
@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 $appData = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'TraductorNWN'
-$errLog = Join-Path $appData 'errors.log'
+$errLog = Join-Path $appData 'errores.log'
 New-Item -ItemType Directory -Force $Capturas | Out-Null
 
 $lineas = [System.Collections.Generic.List[string]]::new()
@@ -110,7 +110,7 @@ foreach ($par in $Exe) {
     foreach ($e in $extraidos | Select-Object -First 8) { $lineas.Add("               - $($e.Name)") }
     if ($fallo) {
         $plano = $fallo -replace '\s+', ' '
-        $lineas.Add("               errors.log: " + $plano.Substring(0, [Math]::Min(400, $plano.Length)))
+        $lineas.Add("               errores.log: " + $plano.Substring(0, [Math]::Min(400, $plano.Length)))
     }
 }
 
