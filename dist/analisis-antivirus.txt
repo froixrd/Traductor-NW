@@ -1,11 +1,11 @@
 Análisis automático de TraductorNWN.exe
-Fecha (UTC): 2026-10-16 22:29   Commit: c38a4cd3142a7be65f07b392db4695ce26cb1dc5
+Fecha (UTC): 2026-10-16 23:00   Commit: 0867f4d63620651b408cc7979e674c553878d6bb
 
 == Archivos ==
-anterior        65.0 MB  SHA256 0AF0B1D6B701BD9E69C61D48240FEE9C1248B73C2708EB50B677665112A0F9C4
-nuevo           65.0 MB  SHA256 7771C3D4F835C5F97CF8C8B92636CBAB6FF382A3E4B26784768E1FE2490FD746
-ligero           0.6 MB  SHA256 CC6E69705A167C692EB1DDF3BFF5AF3924AA8CB285219F4787CBEA242EC3CACE
-ligero-net10     0.6 MB  SHA256 CC6E69705A167C692EB1DDF3BFF5AF3924AA8CB285219F4787CBEA242EC3CACE
+anterior        65.0 MB  SHA256 7771C3D4F835C5F97CF8C8B92636CBAB6FF382A3E4B26784768E1FE2490FD746
+nuevo           65.0 MB  SHA256 F6EDDF99EA2CD725F17A24BD63B0A08505D4B0ADBB94D9A5E027F32CAEB3165D
+ligero           0.6 MB  SHA256 FE504939748350D109BD76DF1C1A8094EFCFCF564D4D47244B8BB08DDAA5FE06
+ligero-net10     0.6 MB  SHA256 FE504939748350D109BD76DF1C1A8094EFCFCF564D4D47244B8BB08DDAA5FE06
 
 == Arranque (cada .exe solo en una carpeta vacía, 12 s abierto) ==
 anterior     ARRANCA. Ventana: «Traductor NWN». .NET: incluido en el .exe. Archivos sacados a la carpeta temporal: 0
@@ -13,13 +13,14 @@ nuevo        ARRANCA. Ventana: «Traductor NWN». .NET: incluido en el .exe. Arc
 ligero       ARRANCA. Ventana: «Traductor NWN». .NET: .NET 8.0.32 instalado en Windows. Archivos sacados a la carpeta temporal: 0
 ligero-net10 ARRANCA. Ventana: «Traductor NWN». .NET: .NET 10.0.13 instalado en Windows. Archivos sacados a la carpeta temporal: 0
 
-== Microsoft Defender ==
+== Microsoft Defender (configurado como en un PC de casa) ==
 Motor 1.1.26090.9, firmas 1.461.60.0 del 2026-10-16 15:07 (antes de actualizar: 1.461.60.0)
-Protección en la nube: activada. Exclusiones: ninguna
-Control (archivo de prueba EICAR): detectado como Virus:DOS/EICAR_Test_File -> Defender analiza bien aquí.
-anterior     LIMPIO (no detecta nada)
-nuevo        LIMPIO (no detecta nada)
-ligero       LIMPIO (no detecta nada)
+Tiempo real: sí. Comportamiento: sí. Descargas: sí. Nube: sí. Bloqueo a primera vista: sí. Envío de muestras: sí. Exclusiones: ninguna
+Control (archivo de prueba EICAR): bloqueado al descargarlo como Virus:DOS/EICAR_Test_File -> Defender analiza bien aquí.
+anterior     LIMPIO (lo deja descargar y no detecta nada)
+nuevo        LIMPIO (lo deja descargar y no detecta nada)
+ligero       LIMPIO (lo deja descargar y no detecta nada)
 
 Nota: es Microsoft Defender en un Windows de GitHub. Otros antivirus (Avast, AVG, Norton,
-Kaspersky...) pueden opinar distinto, y SmartScreen avisa de todo programa nuevo sin firma.
+Kaspersky...) pueden opinar distinto. Aparte, SmartScreen ("Windows protegió su PC") y el
+navegador avisan de cualquier programa nuevo sin firma digital, aunque esté limpio.
