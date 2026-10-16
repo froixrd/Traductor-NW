@@ -10,6 +10,18 @@ $L = [System.Collections.Generic.List[string]]::new()
 function Linea([string] $s) { $L.Add($s); Write-Output $s }
 
 # --- Defender como en un PC de casa ---
+# Los Windows de GitHub lo recortan con directivas (tiempo real apagado, etc.): se quitan.
+$pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+if (Test-Path $pol) {
+    $vals = Get-ChildItem $pol -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        $k = $_; $k.Property | ForEach-Object { "$($k.PSChildName)\$_=$($k.GetValue($_))" } }
+    $raiz = (Get-Item $pol).Property | ForEach-Object { "$_=$((Get-Item $pol).GetValue($_))" }
+    Linea ("Directivas de Defender encontradas: " + ((@($raiz) + @($vals)) -join '; '))
+    Remove-Item $pol -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item $pol -Force | Out-Null
+}
+$atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+if (Test-Path $atp) { Remove-ItemProperty $atp -Name ForceDefenderPassiveMode -ErrorAction SilentlyContinue }
 try {
     $pref = Get-MpPreference -ErrorAction Stop
     foreach ($x in @($pref.ExclusionPath))      { if ($x) { Remove-MpPreference -ExclusionPath $x } }
@@ -21,11 +33,53 @@ try {
     Set-MpPreference -DisableRealtimeMonitoring $false
 } catch { Linea "Aviso al configurar Defender: $($_.Exception.Message)" }
 & $mpcmd -SignatureUpdate | Out-Null
-Start-Sleep -Seconds 5
+Set-MpPreference -DisableRealtimeMonitoring $false -DisableIOAVProtection $false -DisableBehaviorMonitoring $false -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 15
 $st = Get-MpComputerStatus
 $p2 = Get-MpPreference
 Linea "Defender: modo $($st.AMRunningMode), tiempo real $($st.RealTimeProtectionEnabled), comportamiento $($st.BehaviorMonitorEnabled), descargas (IOAV) $($st.IoavProtectionEnabled), firmas $($st.AntivirusSignatureVersion)"
 Linea "Nube $($p2.MAPSReporting), envío de muestras $($p2.SubmitSamplesConsent), bloqueo a primera vista desactivado: $($p2.DisableBlockAtFirstSeen)"
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+[ComImport, Guid("73db1241-1e85-4581-8e4f-a81e1d0f8c57"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAttachmentExecute {
+    [PreserveSig] int SetClientTitle([MarshalAs(UnmanagedType.LPWStr)] string t);
+    [PreserveSig] int SetClientGuid(ref Guid g);
+    [PreserveSig] int SetLocalPath([MarshalAs(UnmanagedType.LPWStr)] string p);
+    [PreserveSig] int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string n);
+    [PreserveSig] int SetSource([MarshalAs(UnmanagedType.LPWStr)] string s);
+    [PreserveSig] int SetReferrer([MarshalAs(UnmanagedType.LPWStr)] string r);
+    [PreserveSig] int CheckPolicy();
+    [PreserveSig] int Prompt(IntPtr hwnd, int prompt, out int action);
+    [PreserveSig] int Save();
+    [PreserveSig] int Execute(IntPtr hwnd, [MarshalAs(UnmanagedType.LPWStr)] string verb, out IntPtr process);
+    [PreserveSig] int SaveWithUI(IntPtr hwnd);
+    [PreserveSig] int ClearClientState();
+}
+[ComImport, Guid("4125dd96-e03a-4103-8f70-e0597d803b9c")] class AttachmentServices { }
+public static class Descarga {
+    // Devuelve el HRESULT de Save(): 0 = el antivirus lo deja pasar.
+    public static int Guardar(string ruta, string origen, string referente) {
+        int hr = -1;
+        var t = new Thread(() => {
+            var ae = (IAttachmentExecute)new AttachmentServices();
+            var g = new Guid("8b5a2f4e-6c1d-4f7e-9a3b-2d4c6e8f0a1b");
+            ae.SetClientGuid(ref g);
+            ae.SetLocalPath(ruta);
+            ae.SetSource(origen);
+            ae.SetReferrer(referente);
+            hr = ae.Save();
+            Marshal.ReleaseComObject(ae);
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start(); t.Join();
+        return hr;
+    }
+}
+'@
 
 $base = Join-Path $env:RUNNER_TEMP 'versiones'
 New-Item -ItemType Directory -Force $base | Out-Null
@@ -41,13 +95,13 @@ function Probar([string] $nombre, [string] $origen) {
     New-Item -ItemType Directory -Force $dir | Out-Null
     $exe = Join-Path $dir 'TraductorNWN.exe'
     $desde = (Get-Date).AddSeconds(-2)
+    $descarga = ''
     try {
         Copy-Item $origen $exe -ErrorAction Stop
-        Set-Content -Path $exe -Stream Zone.Identifier -ErrorAction Stop -Value @(
-            '[ZoneTransfer]', 'ZoneId=3',
-            'ReferrerUrl=https://github.com/froixrd/Traductor-NW/blob/master/dist/TraductorNWN.exe',
-            'HostUrl=https://raw.githubusercontent.com/froixrd/Traductor-NW/master/dist/TraductorNWN.exe')
-    } catch { }
+        $hr = [Descarga]::Guardar($exe, 'https://raw.githubusercontent.com/froixrd/Traductor-NW/master/dist/TraductorNWN.exe',
+                                  'https://github.com/froixrd/Traductor-NW/blob/master/dist/TraductorNWN.exe')
+        $descarga = if ($hr -eq 0) { 'descarga OK' } else { 'descarga BLOQUEADA 0x{0:X8}' -f $hr }
+    } catch { $descarga = "descarga: error $($_.Exception.Message)" }
     Start-Sleep -Seconds 3
 
     $scan = if (Test-Path $exe) { & $mpcmd -Scan -ScanType 3 -File $exe -DisableRemediation 2>&1 | Out-String } else { '' }
@@ -72,7 +126,7 @@ function Probar([string] $nombre, [string] $origen) {
     $todas = @($enScan + $ev | Select-Object -Unique)
     $veredicto = if ($todas.Count) { 'DETECTADO: ' + ($todas -join ', ') } elseif ($codigo -eq 0) { 'limpio' } else { "análisis con código $codigo" }
     if (-not $sigue) { $veredicto += ' (Defender lo borró)' }
-    [pscustomobject]@{ Veredicto = $veredicto; Arranca = $arranca }
+    [pscustomobject]@{ Veredicto = "$descarga; $veredicto"; Arranca = $arranca }
 }
 
 # --- Control: archivo de prueba EICAR (inofensivo; guardado al revés y en números) ---
@@ -81,10 +135,14 @@ $c = 42,72,43,72,36,33,69,76,73,70,45,84,83,69,84,45,83,85,82,73,86,73,84,78,65,
 $ctrlDir = Join-Path $base 'control'
 New-Item -ItemType Directory -Force $ctrlDir | Out-Null
 $desde = (Get-Date).AddSeconds(-2)
-try { [System.IO.File]::WriteAllBytes((Join-Path $ctrlDir 'control.com'), [byte[]]$c) } catch { }
+$hrCtrl = 'sin probar'
+try {
+    [System.IO.File]::WriteAllBytes((Join-Path $ctrlDir 'control.com'), [byte[]]$c)
+    $hrCtrl = '0x{0:X8}' -f [Descarga]::Guardar((Join-Path $ctrlDir 'control.com'), 'https://example.com/control.com', 'https://example.com/')
+} catch { $hrCtrl = "error $($_.Exception.Message)" }
 Start-Sleep -Seconds 5
 $rt = if (Test-Path (Join-Path $ctrlDir 'control.com')) { 'el tiempo real NO lo borró' } else { 'el tiempo real lo borró al guardarlo' }
-Linea "Control EICAR: $rt; detecciones: $((Detecciones $desde $ctrlDir) -join ', ')"
+Linea "Control EICAR: descarga $hrCtrl; $rt; detecciones: $((Detecciones $desde $ctrlDir) -join ', ')"
 Linea ''
 
 # --- Todas las versiones de dist/ ---
