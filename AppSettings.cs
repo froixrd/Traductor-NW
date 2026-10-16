@@ -34,6 +34,7 @@ namespace TraductorNWN
         public bool VolverAlTraductor { get; set; } = true;
         public string? MicrosoftKeyCifrada { get; set; }
         public string? MicrosoftRegion { get; set; }
+        public bool GoogleDeRespaldo { get; set; } = true;   // usar Google si Microsoft y DeepL no funcionan
         public List<string> NoTraducir { get; set; } = new();
         public bool AvisarPrivados { get; set; } = true;
         public bool TeclaRapida { get; set; } = true;

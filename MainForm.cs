@@ -102,6 +102,10 @@ namespace TraductorNWN
         private ThemedLabel _usageRowLabel = null!;
         private ThemedPanel _usageCell = null!;
         private FieldBox _glossaryBox = null!;
+        private ToggleSwitch _fallbackSwitch = null!;
+        private ThemedLabel _fallbackOrder = null!;
+        private ThemedLabel _fallbackRowLabel = null!;
+        private ThemedPanel _fallbackCell = null!;
 
         private ThemedPanel _tabRow = null!;
         private FlatButton[] _tabButtons = Array.Empty<FlatButton>();
@@ -310,6 +314,28 @@ namespace TraductorNWN
                 _usageLabel.SetBounds(0, Dpi.S(17), w, Dpi.S(20));
             };
             _usageRowLabel = AddSettingsRow("Uso este mes", _usageCell, Dpi.S(18));
+
+            // --- Respaldo: Google cuando no funciona ninguno de los de pago ---
+            _fallbackCell = NewCell(Dpi.S(50));
+            _fallbackSwitch = new ToggleSwitch { AccessibleName = "Usar Google Translate si Microsoft y DeepL no funcionan" };
+            _fallbackSwitch.CheckedChanged += FallbackSwitch_CheckedChanged;
+            var fallbackCaption = new ThemedLabel
+            {
+                Text = "Usar Google si Microsoft y DeepL no funcionan",
+                Font = UiFonts.Ui(10f),
+                Tone = Tone.Text,
+                AutoEllipsis = true
+            };
+            _fallbackOrder = new ThemedLabel { Font = UiFonts.Ui(9f), Tone = Tone.Dim, AutoEllipsis = true };
+            _fallbackCell.Controls.AddRange(new Control[] { _fallbackSwitch, fallbackCaption, _fallbackOrder });
+            _fallbackCell.Resize += (s, e) =>
+            {
+                int w = _fallbackCell.ClientSize.Width, x = Dpi.S(56);
+                _fallbackSwitch.Location = Point.Empty;
+                fallbackCaption.SetBounds(x, 0, Math.Max(10, w - x), Dpi.S(26));
+                _fallbackOrder.SetBounds(x, Dpi.S(28), Math.Max(10, w - x), Dpi.S(20));
+            };
+            _fallbackRowLabel = AddSettingsRow("Respaldo", _fallbackCell, Dpi.S(26));
 
             // --- Palabras que no se traducen ---
             var glossaryCell = NewCell(Dpi.S(64));
@@ -662,6 +688,8 @@ namespace TraductorNWN
                 // Las dos claves se cargan siempre: si Google bloquea, se usa la otra mientras tanto.
                 _translator.SetKey(Proveedor.DeepL, _settings.DeepLKey);
                 _translator.SetKey(Proveedor.Microsoft, _settings.MicrosoftKey, _settings.MicrosoftRegion);
+                _translator.GoogleFallback = _settings.GoogleDeRespaldo;
+                _fallbackSwitch.Checked = _settings.GoogleDeRespaldo;
                 var preferred = ParseProvider(_settings.Proveedor);
                 _translator.Preferred = preferred;
                 _providerSeg.SetSelectedSilently(Array.IndexOf(SegProviders, preferred));
@@ -712,6 +740,9 @@ namespace TraductorNWN
             _usageRowLabel.Visible = keyed;
             _usageCell.Visible = keyed;
             _regionBox.Visible = p == Proveedor.Microsoft;
+            _fallbackRowLabel.Visible = keyed;
+            _fallbackCell.Visible = keyed;
+            UpdateFallbackOrder();
 
             if (keyed)
             {
@@ -758,6 +789,18 @@ namespace TraductorNWN
                 LayoutKeyCell();
             }
             LayoutSettings();
+        }
+
+        // "Orden: Microsoft → DeepL → Google", con los traductores que tienen clave guardada.
+        private void UpdateFallbackOrder()
+        {
+            var chain = _translator.ConfiguredChain();
+            var names = string.Join(" → ", chain.Select(p => p == Proveedor.Google ? "Google" : TranslationService.Name(p)));
+            bool google = chain.Contains(Proveedor.Google);
+            _fallbackOrder.Text = google
+                ? "Orden: " + names
+                : "Orden: " + names + ". Si fallan, los mensajes se muestran sin traducir.";
+            _fallbackOrder.Tone = google ? Tone.Dim : Tone.Warn;
         }
 
         // Ventana compacta: sin título, pestañas ni línea de ayuda, para dejarla pequeña sobre el juego.
@@ -904,7 +947,7 @@ namespace TraductorNWN
         {
             if (_pill == null || _incoming == null) return;
             var active = _translator.ActiveProvider;
-            string shortName = TranslationService.Name(active);
+            string shortName = active is Proveedor a ? TranslationService.Name(a) : "Sin traductor";
             string longName = active == Proveedor.Google ? "Google Translate" : shortName;
             var cooldown = _translator.CooldownRemaining;
             int pending = _incoming.Pending;
@@ -936,7 +979,12 @@ namespace TraductorNWN
             }
 
             bool resized;
-            if (cooldown.TotalSeconds >= 1)
+            if (active == null)
+            {
+                // Ninguno funciona y el respaldo con Google está desactivado.
+                resized = _pill.SetState(Tone.Alert, "Sin traductor", Tone.Warn, note, Tone.Dim, warn: true);
+            }
+            else if (cooldown.TotalSeconds >= 1)
             {
                 resized = _pill.SetState(Tone.Alert, $"Pausa {Math.Ceiling(cooldown.TotalSeconds)} s", Tone.Warn,
                     pending > 0 ? $"{pending} en cola" : "", Tone.Dim, warn: true);
@@ -974,7 +1022,7 @@ namespace TraductorNWN
                 bool more = pending > 1;
                 if (_translator.CooldownRemaining.TotalSeconds >= 1)
                 {
-                    var provider = TranslationService.Name(_translator.ActiveProvider);
+                    var provider = _translator.ActiveProvider is Proveedor ap ? TranslationService.Name(ap) : "el traductor";
                     text = $"«{Shorten(last.Text)}» está en cola: sale en cuanto {provider} vuelva a responder. Esc para cancelarlo.";
                     tone = Tone.Warn;
                 }
@@ -1072,7 +1120,8 @@ namespace TraductorNWN
         private void CheckMicrosoftSetup()
         {
             if (_translator.Preferred != Proveedor.Microsoft || _translator.GetKey(Proveedor.Microsoft) != null) return;
-            Notify("Ahora se traduce con Google. Para usar Microsoft Translator (gratis hasta 2 millones de caracteres al mes) " +
+            var now = _translator.ActiveProvider is Proveedor ap ? TranslationService.Name(ap) : "ningún traductor";
+            Notify($"Ahora se traduce con {now}. Para usar Microsoft Translator (gratis hasta 2 millones de caracteres al mes) " +
                    "pega tu clave en Ajustes → Traductor. Los pasos para conseguirla están en el README del proyecto.", Tone.Accent);
             if (_settings.MigradoAMicrosoft) ToggleSettings(true);
         }
@@ -1623,6 +1672,16 @@ namespace TraductorNWN
             ScheduleSave();
         }
 
+        private void FallbackSwitch_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_suppressEvents) return;
+            _settings.GoogleDeRespaldo = _fallbackSwitch.Checked;
+            _translator.GoogleFallback = _fallbackSwitch.Checked;
+            UpdateFallbackOrder();
+            UpdateStatus();
+            ScheduleSave();
+        }
+
         private void HotkeySwitch_CheckedChanged(object? sender, EventArgs e)
         {
             if (_suppressEvents) return;
@@ -1782,6 +1841,7 @@ namespace TraductorNWN
             _translator.SetKey(p, key, region);
             _translator.Preferred = p;
             _settings.Save();
+            UpdateFallbackOrder();
         }
 
         private void SetKeyStatus(string text, Tone tone)

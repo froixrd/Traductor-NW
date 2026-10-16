@@ -48,6 +48,12 @@ namespace TraductorNWN
 
     internal enum ProviderState { Ok, NoKey, InvalidKey, QuotaExhausted }
 
+    // Ningún traductor puede encargarse ahora (los de pago fallan y el respaldo con Google está desactivado).
+    internal sealed class NoProviderException : TranslationException
+    {
+        public NoProviderException(string message) : base(message) { }
+    }
+
     // La traducción agrupada de Google no devolvió el mismo número de líneas.
     internal sealed class SplitMismatchException : TranslationException
     {
@@ -61,7 +67,8 @@ namespace TraductorNWN
     //  - agrupa varias líneas en UNA petición;
     //  - caché LRU para no repetir peticiones;
     //  - un RateGate por proveedor con espera progresiva y respeto del Retry-After;
-    //  - si el proveedor elegido está bloqueado o sin cuota, usa Google (y si Google está bloqueado, otro configurado);
+    //  - orden: el elegido, luego los otros que tengan clave (Microsoft, DeepL) y por último Google
+    //    (respaldo que se puede desactivar). Si uno falla, el mismo lote pasa enseguida al siguiente;
     //  - cuando se acaba la cuota gratuita de Microsoft/DeepL, vuelve a probarlo cada hora;
     //  - abreviaturas de chat escritas completas y palabras protegidas que nunca se traducen.
     internal sealed class TranslationService : IDisposable
@@ -81,8 +88,11 @@ namespace TraductorNWN
         // Cada cuánto se vuelve a probar un proveedor sin cuota (la cuota gratuita se renueva sola).
         private static readonly TimeSpan QuotaRetry = TimeSpan.FromHours(1);
 
-        // Orden de respaldo: Google primero (gratis y sin clave), luego los que tengan clave.
-        private static readonly Proveedor[] FallbackOrder = { Proveedor.Google, Proveedor.Microsoft, Proveedor.DeepL };
+        // Traductores con clave, en el orden en que se prueban como respaldo del elegido.
+        private static readonly Proveedor[] KeyedOrder = { Proveedor.Microsoft, Proveedor.DeepL };
+
+        // Pausa de un traductor con clave tras un error de red o del servidor: mientras tanto se usa el siguiente.
+        private static readonly TimeSpan KeyedErrorPause = TimeSpan.FromSeconds(20);
 
         private readonly HttpClient _http;
         private readonly LruCache<string, string> _cache = new(5000, StringComparer.Ordinal);
@@ -96,6 +106,7 @@ namespace TraductorNWN
         private readonly KeyState _deepl = new();
         private readonly KeyState _microsoft = new();
         private volatile Proveedor _preferred = Proveedor.Google;
+        private volatile bool _googleFallback = true;
         private volatile ProtectedTerms _terms = ProtectedTerms.Empty;
 
         // Avisos para mostrar al usuario: (texto, esAviso). P. ej. "Microsoft sin cuota, se usa Google".
@@ -138,6 +149,27 @@ namespace TraductorNWN
             get => _preferred;
             set => _preferred = value;
         }
+
+        // Usar Google cuando ninguno de los traductores con clave (Microsoft, DeepL) funciona.
+        public bool GoogleFallback
+        {
+            get => _googleFallback;
+            set => _googleFallback = value;
+        }
+
+        // Orden completo en que se prueban los traductores: el elegido, los otros con clave y Google.
+        public IEnumerable<Proveedor> Chain()
+        {
+            var preferred = _preferred;
+            yield return preferred;
+            foreach (var p in KeyedOrder)
+                if (p != preferred) yield return p;
+            if (preferred != Proveedor.Google && _googleFallback) yield return Proveedor.Google;
+        }
+
+        // El orden, solo con los traductores que se pueden usar (Google o con clave guardada).
+        public IReadOnlyList<Proveedor> ConfiguredChain() =>
+            Chain().Where(p => p == Proveedor.Google || State(p).Key != null).ToList();
 
         public void SetKey(Proveedor provider, string? key, string? region = null)
         {
@@ -187,9 +219,10 @@ namespace TraductorNWN
             _cache.Clear(); // las traducciones guardadas pueden haber traducido esas palabras
         }
 
-        public Proveedor ActiveProvider => ChooseProvider();
-        public TimeSpan CooldownRemaining => Gate(ChooseProvider()).CooldownRemaining;
-        public TimeSpan TimeUntilReady => Gate(ChooseProvider()).TimeUntilReady;
+        // null = ningún traductor disponible (solo si el respaldo con Google está desactivado).
+        public Proveedor? ActiveProvider => ChooseProvider();
+        public TimeSpan CooldownRemaining => ChooseProvider() is Proveedor p ? Gate(p).CooldownRemaining : TimeSpan.Zero;
+        public TimeSpan TimeUntilReady => ChooseProvider() is Proveedor p ? Gate(p).TimeUntilReady : TimeSpan.Zero;
 
         public void Dispose() => _http.Dispose();
 
@@ -202,28 +235,48 @@ namespace TraductorNWN
             _ => _googleGate
         };
 
-        private Proveedor ChooseProvider()
+        // El primero del orden que funcione y no esté en pausa. Si todos los utilizables están en pausa,
+        // el que antes vuelva a estar libre. null si no queda ninguno utilizable.
+        private Proveedor? ChooseProvider(ICollection<Proveedor>? exclude = null)
         {
-            // El elegido, si tiene clave válida y cuota; si no, Google.
-            var preferred = IsUsable(_preferred) ? _preferred : Proveedor.Google;
-            var wait = Gate(preferred).CooldownRemaining;
-            if (wait <= TimeSpan.FromSeconds(2)) return preferred;
-
-            // En pausa larga (bloqueo o exceso de peticiones): mientras tanto, el primero libre en el
-            // orden de respaldo (Google primero).
-            var best = preferred;
-            foreach (var p in FallbackOrder)
+            Proveedor? best = null;
+            var bestWait = TimeSpan.MaxValue;
+            foreach (var p in Chain())
             {
-                if (p == preferred || !IsUsable(p)) continue;
+                if (exclude != null && exclude.Contains(p)) continue;
+                if (!IsUsable(p)) continue;
                 var w = Gate(p).CooldownRemaining;
                 if (w <= TimeSpan.FromSeconds(2)) return p;
-                if (w < wait)
+                if (w < bestWait)
                 {
                     best = p;
-                    wait = w;
+                    bestWait = w;
                 }
             }
             return best;
+        }
+
+        // El siguiente del orden que esté libre ya (para pasar el mismo lote sin esperar).
+        private Proveedor? NextReady(ICollection<Proveedor> tried)
+        {
+            foreach (var p in Chain())
+            {
+                if (tried.Contains(p) || !IsUsable(p)) continue;
+                if (Gate(p).CooldownRemaining <= TimeSpan.FromSeconds(2)) return p;
+            }
+            return null;
+        }
+
+        private string NoProviderMessage()
+        {
+            var reasons = KeyedOrder.Select(p => $"{Name(p)}: {GetState(p) switch
+            {
+                ProviderState.NoKey => "sin clave",
+                ProviderState.InvalidKey => "clave no válida",
+                ProviderState.QuotaExhausted => "cuota agotada",
+                _ => "no responde"
+            }}");
+            return $"No hay ningún traductor disponible ({string.Join("; ", reasons)}) y el respaldo con Google está desactivado.";
         }
 
         // ---------------- API pública ----------------
@@ -373,14 +426,64 @@ namespace TraductorNWN
                 prepared.Add(p);
             }
 
-            var provider = ChooseProvider();
+            var provider = ChooseProvider() ?? throw new NoProviderException(NoProviderMessage());
+            var tried = new List<Proveedor>(3);
+            Exception last;
+            while (true)
+            {
+                tried.Add(provider);
+                try
+                {
+                    var result = await CallProviderAsync(provider, prepared, source, target, ct).ConfigureAwait(false);
+                    for (int i = 0; i < chunk.Count; i++)
+                    {
+                        var r = ProtectedTerms.Restore(result[i] ?? "", tokens[i]);
+                        if (string.IsNullOrWhiteSpace(r)) r = chunk[i];
+                        result[i] = r;
+                        _cache.Set(CacheKey(chunk[i], source, target), r);
+                    }
+                    return result;
+                }
+                catch (SplitMismatchException) when (chunk.Count > 1)
+                {
+                    // La petición funcionó, solo falló el reparto por líneas: partimos el lote en dos.
+                    int half = chunk.Count / 2;
+                    var a = await TranslateChunkAsync(chunk.GetRange(0, half), source, target, ct).ConfigureAwait(false);
+                    var b = await TranslateChunkAsync(chunk.GetRange(half, chunk.Count - half), source, target, ct).ConfigureAwait(false);
+                    return a.Concat(b).ToArray();
+                }
+                catch (ProviderUnavailableException ex)
+                {
+                    MarkUnavailable(ex);
+                    last = ex;
+                }
+                catch (Exception ex) when (ex is RateLimitedException or TransientTranslationException)
+                {
+                    last = ex;
+                }
+
+                // El mismo lote, enseguida, con el siguiente del orden que esté libre: no se pierde ningún mensaje.
+                if (NextReady(tried) is Proveedor next)
+                {
+                    provider = next;
+                    continue;
+                }
+
+                // Nadie libre ahora mismo.
+                if (last is RateLimitedException or TransientTranslationException) throw last;
+                if (ChooseProvider() is Proveedor waiting) throw new RateLimitedException(waiting, Gate(waiting).CooldownRemaining);
+                throw new NoProviderException(NoProviderMessage());
+            }
+        }
+
+        // Una petición a un traductor concreto, con su control de ritmo y el registro de éxitos y fallos.
+        private async Task<string[]> CallProviderAsync(Proveedor provider, List<string> prepared, string source, string target, CancellationToken ct)
+        {
             var gate = Gate(provider);
             await gate.AcquireAsync(ct).ConfigureAwait(false);
-
-            string[] result;
             try
             {
-                result = provider switch
+                var result = provider switch
                 {
                     Proveedor.DeepL => await DeepLAsync(prepared, source, target, ct).ConfigureAwait(false),
                     Proveedor.Microsoft => await MicrosoftAsync(prepared, source, target, ct).ConfigureAwait(false),
@@ -389,6 +492,7 @@ namespace TraductorNWN
                 gate.ReportSuccess();
                 OnProviderWorked(provider);
                 CharactersUsed?.Invoke(provider, prepared.Sum(t => t.Length));
+                return result;
             }
             catch (RateLimitedException ex)
             {
@@ -397,33 +501,15 @@ namespace TraductorNWN
             }
             catch (TransientTranslationException)
             {
-                gate.ReportTransientError();
+                // Un traductor con clave que falla se aparta un rato para que se encargue el siguiente.
+                gate.ReportTransientError(provider == Proveedor.Google ? null : KeyedErrorPause);
                 throw;
             }
-            catch (ProviderUnavailableException ex)
+            catch (SplitMismatchException)
             {
-                MarkUnavailable(ex);
-                // El mismo lote se traduce enseguida con el siguiente (Google): no se pierde ningún mensaje.
-                return await TranslateChunkAsync(chunk, source, target, ct).ConfigureAwait(false);
-            }
-            catch (SplitMismatchException) when (chunk.Count > 1)
-            {
-                // La petición funcionó, solo falló el reparto por líneas: partimos el lote en dos.
                 gate.ReportSuccess();
-                int half = chunk.Count / 2;
-                var a = await TranslateChunkAsync(chunk.GetRange(0, half), source, target, ct).ConfigureAwait(false);
-                var b = await TranslateChunkAsync(chunk.GetRange(half, chunk.Count - half), source, target, ct).ConfigureAwait(false);
-                return a.Concat(b).ToArray();
+                throw;
             }
-
-            for (int i = 0; i < chunk.Count; i++)
-            {
-                var r = ProtectedTerms.Restore(result[i] ?? "", tokens[i]);
-                if (string.IsNullOrWhiteSpace(r)) r = chunk[i];
-                result[i] = r;
-                _cache.Set(CacheKey(chunk[i], source, target), r);
-            }
-            return result;
         }
 
         private void MarkUnavailable(ProviderUnavailableException ex)
@@ -434,15 +520,19 @@ namespace TraductorNWN
             {
                 Interlocked.Exchange(ref st.ExhaustedUntilTicks, (UtcNow() + QuotaRetry).Ticks);
                 if (Interlocked.Exchange(ref st.QuotaNotified, 1) == 0)
-                    Notice?.Invoke($"Se ha acabado la cuota gratuita de {name}. Mientras tanto se traduce con Google; " +
+                    Notice?.Invoke($"Se ha acabado la cuota gratuita de {name}. Mientras tanto {WhoTranslatesNow()}; " +
                                    $"cada hora se vuelve a probar {name} y se usa en cuanto se renueve.", true);
             }
             else
             {
                 st.DisabledReason = ex.Message;
-                Notice?.Invoke($"{name} no acepta la clave ({ex.Message}). Se traduce con Google hasta que la corrijas en Ajustes.", true);
+                Notice?.Invoke($"{name} no acepta la clave ({ex.Message}). Hasta que la corrijas en Ajustes, {WhoTranslatesNow()}.", true);
             }
         }
+
+        private string WhoTranslatesNow() => ChooseProvider() is Proveedor p
+            ? "se traduce con " + (p == Proveedor.Google ? "Google" : Name(p))
+            : "no hay otro traductor disponible y los mensajes se muestran sin traducir";
 
         private void OnProviderWorked(Proveedor provider)
         {

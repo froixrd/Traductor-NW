@@ -75,11 +75,17 @@ Neverwinter Nights: Enhanced Edition.
 - **Solo el chat de jugadores** (activado por defecto): el combate y los mensajes
   del sistema aparecen sin traducir en la pestaña Inglés. Es lo que más
   peticiones ahorra en las peleas.
-- **Microsoft primero, Google de respaldo.** Si se acaba la cuota gratuita de
-  Microsoft, el mismo mensaje se traduce con Google sin perder nada, se avisa una
-  vez y cada hora se vuelve a probar Microsoft; en cuanto se renueva, se vuelve a
-  usar solo. Si la clave deja de valer, se usa Google hasta que la corrijas.
-  Si Microsoft está en pausa por exceso de peticiones, también se tira de Google.
+- **Orden de traductores: Microsoft → DeepL → Google.** Se usa el elegido; si
+  no funciona (sin cuota, clave no válida, en pausa o con errores del servidor),
+  el mismo mensaje pasa enseguida al siguiente que tenga clave y, si ninguno de
+  los de pago funciona, a Google. No se pierde ningún mensaje.
+- **Respaldo con Google opcional** (Ajustes → Respaldo, activado por defecto).
+  Si lo desactivas y fallan Microsoft y DeepL, los mensajes se muestran sin
+  traducir (con un aviso) y lo que escribes no se envía hasta que lo mandes sin
+  traducir con Ctrl+Enter. En Ajustes se ve el orden que se está usando.
+- Cuando se acaba la cuota gratuita de Microsoft o DeepL se avisa una vez y cada
+  hora se vuelve a probar; en cuanto se renueva, se vuelve a usar solo. Una clave
+  que deja de valer no se vuelve a usar hasta que la corrijas.
 - Y al revés: si Google te bloquea y tienes otra clave guardada, se usa esa
   mientras dura el bloqueo.
 - El indicador de arriba dice qué traductor se está usando y por qué no el
@@ -102,7 +108,9 @@ Neverwinter Nights: Enhanced Edition.
 
 ## Qué traductor usar
 
-El traductor por defecto es **Microsoft Translator** y el de respaldo **Google**.
+El traductor por defecto es **Microsoft Translator**. Si tienes también clave de
+DeepL, es el siguiente; **Google** queda como último respaldo (se puede
+desactivar en Ajustes → Respaldo).
 
 | Traductor | Coste | Notas |
 |---|---|---|
@@ -154,6 +162,7 @@ Se guarda en `%AppData%\TraductorNWN\config.json` (todo se cambia desde Ajustes)
   versión anterior la guardaba en texto plano junto al .exe; se migra sola).
 - `Proveedor`: `Microsoft` (por defecto), `Google` o `DeepL`.
 - `MicrosoftKeyCifrada`, `MicrosoftRegion`: clave (cifrada) y región de Microsoft Translator.
+- `GoogleDeRespaldo`: usar Google cuando Microsoft y DeepL no funcionan (`true` por defecto).
 - `MicrosoftMes`, `MicrosoftCaracteres`: contador aproximado de caracteres enviados a Microsoft este mes.
 - `NoTraducir`: palabras que no se traducen.
 - `VolverAlTraductor`, `TeclaRapida`, `AvisarPrivados`, `Compacto`.

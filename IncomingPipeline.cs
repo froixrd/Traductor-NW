@@ -59,6 +59,7 @@ namespace TraductorNWN
             var batch = new List<Item>();
             int consecutiveFailures = 0;
             bool limited = false;
+            bool noProvider = false;
 
             while (!ct.IsCancellationRequested)
             {
@@ -96,9 +97,10 @@ namespace TraductorNWN
                     Remove(batch, take);
 
                     consecutiveFailures = 0;
-                    if (limited)
+                    if (limited || noProvider)
                     {
                         limited = false;
+                        noProvider = false;
                         _onNotice("Traducción reanudada.", false);
                     }
                 }
@@ -125,6 +127,17 @@ namespace TraductorNWN
                         _onNotice("No se pudo traducir: " + ex.Message, true);
                         consecutiveFailures = 0;
                     }
+                }
+                catch (NoProviderException ex)
+                {
+                    // Ningún traductor disponible y Google desactivado: se muestran sin traducir (avisando una vez).
+                    FlushUntranslated(batch, take, "No hay ningún traductor disponible.");
+                    if (!noProvider)
+                    {
+                        noProvider = true;
+                        _onNotice(ex.Message + " Los mensajes se muestran sin traducir.", true);
+                    }
+                    consecutiveFailures = 0;
                 }
                 catch (Exception ex)
                 {

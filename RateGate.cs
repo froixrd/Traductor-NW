@@ -65,12 +65,13 @@ namespace TraductorNWN
             }
         }
 
-        // Error de red / 5xx: pausa corta para no martillear.
-        public void ReportTransientError()
+        // Error de red / 5xx: pausa para no martillear (corta por defecto; más larga si hay otro
+        // traductor que pueda encargarse mientras tanto).
+        public void ReportTransientError(TimeSpan? pause = null)
         {
             lock (_lock)
             {
-                var until = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+                var until = DateTime.UtcNow + (pause ?? TimeSpan.FromSeconds(2));
                 if (until > _cooldownUntilUtc) _cooldownUntilUtc = until;
             }
         }
