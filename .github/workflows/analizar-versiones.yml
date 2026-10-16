@@ -1,0 +1,27 @@
+# Analiza con Microsoft Defender (configurado como en un PC de casa) todas las versiones del
+# .exe que ha habido en dist/, para ver con cuál empezó a saltar el antivirus.
+# Se lanza a mano desde Actions → "Analizar versiones con Defender" → Run workflow.
+name: Analizar versiones con Defender
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/analizar-versiones.yml'
+      - '.github/scripts/analizar-versiones.ps1'
+
+permissions:
+  contents: read
+
+jobs:
+  analizar:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Analizar todas las versiones
+        shell: pwsh
+        run: ./.github/scripts/analizar-versiones.ps1
