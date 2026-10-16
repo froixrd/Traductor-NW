@@ -1459,6 +1459,10 @@ namespace TraductorNWN
                 if (translated) _translator.Remember(body, parts.Body, "en", "es");
 
                 await Task.Delay(_settings.RetardoEnvioMs, token).ConfigureAwait(false);
+
+                // Con Alt, Ctrl o Mayús pulsadas, el Enter que se manda al juego haría otra cosa
+                // (Alt+Enter = pantalla completa). Pasa sobre todo con Ctrl+Enter y "Esperar antes de enviar" a 0.
+                await WaitForModifiersReleasedAsync(1500, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -1509,6 +1513,29 @@ namespace TraductorNWN
                 Notify("Tu mensaje no aparece en el log del juego. Si se quedó escrito en el chat del juego, pulsa Enter allí.", Tone.Warn);
             }
             return true;
+        }
+
+        // Espera (como mucho timeoutMs) a que se suelten Alt, Ctrl y Mayús. Se mira el estado de esas
+        // teclas tal como lo ve la ventana del traductor (Control.ModifierKeys, en el hilo de la ventana),
+        // sin leer el teclado de todo el sistema: los antivirus asocian esa lectura a los keyloggers.
+        private async Task WaitForModifiersReleasedAsync(int timeoutMs, CancellationToken ct)
+        {
+            long deadline = Environment.TickCount64 + timeoutMs;
+            while (Environment.TickCount64 < deadline && ModifiersDown())
+                await Task.Delay(20, ct).ConfigureAwait(false);
+        }
+
+        private bool ModifiersDown()
+        {
+            if (IsDisposed || !IsHandleCreated) return false;
+            try
+            {
+                return Invoke(() => (Control.ModifierKeys & (Keys.Shift | Keys.Control | Keys.Alt)) != Keys.None);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+            {
+                return false; // ventana cerrándose
+            }
         }
 
         // Devuelve un mensaje que no pudo salir al campo de texto (si está vacío) para reintentarlo.

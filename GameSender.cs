@@ -26,8 +26,6 @@ namespace TraductorNWN
         // y una pulsación de 0 ms puede caer entre dos fotogramas y perderse.
         private const int EnterHoldMs = 50;
 
-        private const int VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
-
         // Devuelve null si se envió bien, o el motivo del fallo.
         //
         // Por qué no SendKeys: SendKeys simula las teclas sin su código físico (scancode). Las letras
@@ -57,8 +55,8 @@ namespace TraductorNWN
             if (!WindowFocus.BringToFront(hwnd))
                 return "Windows no dejó poner el juego en primer plano. Haz clic en el juego y vuelve a enviar el mensaje.";
 
-            // Con Alt, Ctrl o Mayús pulsadas, Enter podría hacer otra cosa (Alt+Enter = pantalla completa).
-            WaitForModifiersReleased(1500);
+            // (Antes de llamar aquí, MainForm espera a que sueltes Alt, Ctrl y Mayús: con alguna pulsada,
+            // Enter haría otra cosa en el juego, como Alt+Enter = pantalla completa.)
             Thread.Sleep(150);
 
             // 1. Abrir la caja de chat.
@@ -155,20 +153,6 @@ namespace TraductorNWN
                 }
             }
         };
-
-        private static void WaitForModifiersReleased(int timeoutMs)
-        {
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < timeoutMs && AnyModifierDown())
-                Thread.Sleep(20);
-        }
-
-        private static bool AnyModifierDown()
-        {
-            foreach (var vk in new[] { VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN })
-                if ((NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0) return true;
-            return false;
-        }
 
         internal static IntPtr FindGameWindow()
         {

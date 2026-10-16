@@ -81,9 +81,6 @@ namespace TraductorNWN
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
-        [DllImport("user32.dll")]
-        internal static extern short GetAsyncKeyState(int vKey);
-
         internal const uint INPUT_KEYBOARD = 1;
         internal const uint KEYEVENTF_KEYUP = 0x0002;
         internal const uint KEYEVENTF_UNICODE = 0x0004;

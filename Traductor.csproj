@@ -9,13 +9,27 @@
     <AssemblyName>TraductorNWN</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
 
+    <!-- Datos que Windows muestra en Propiedades > Detalles. Un .exe sin autor ni descripción
+         parece más sospechoso a los antivirus. -->
+    <Version>2.0.0</Version>
+    <Product>Traductor NWN</Product>
+    <AssemblyTitle>Traductor NWN</AssemblyTitle>
+    <Description>Traductor del chat de Neverwinter Nights: Enhanced Edition (inglés y español)</Description>
+    <Company>froixrd</Company>
+    <Authors>froixrd</Authors>
+    <Copyright>© 2026 froixrd</Copyright>
+
     <!-- Publicación portable: un solo .exe, sin necesitar .NET instalado -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Antes estaba a true: al arrancar, el .exe sacaba varias DLL a la carpeta temporal y las cargaba
+         desde ahí, que es justo lo que hacen muchos virus y los antivirus lo vigilan. Esas DLL son de
+         WPF y este programa (WinForms) no las usa, así que basta con el .exe solo. -->
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>embedded</DebugType>
 
     <!-- Nitidez en pantallas con zoom (125 %, 150 %…). -->
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>

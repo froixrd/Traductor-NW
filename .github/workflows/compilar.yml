@@ -1,6 +1,10 @@
 # Compila TraductorNWN.exe en un Windows de GitHub y lo guarda en dist/,
 # así no hace falta tener .NET instalado en tu PC.
 # Se ejecuta solo al cambiar el código en master; también a mano desde la pestaña Actions.
+#
+# Además de compilar:
+#  - prueba que cada .exe arranca solo, sin DLL al lado (si el nuevo falla, no se guarda);
+#  - lo analiza con Microsoft Defender actualizado y deja el resultado en dist/analisis-antivirus.txt.
 name: Compilar exe
 
 on:
@@ -10,6 +14,7 @@ on:
       - '**.cs'
       - '**.csproj'
       - 'app.ico'
+      - 'herramientas/*.ps1'
       - '.github/workflows/compilar.yml'
   workflow_dispatch:
 
@@ -26,6 +31,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Guardar la versión anterior (para compararla)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/anterior" | Out-Null
+          if (Test-Path dist/TraductorNWN.exe) { Copy-Item dist/TraductorNWN.exe "$env:RUNNER_TEMP/anterior/TraductorNWN.exe" }
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -33,28 +44,64 @@ jobs:
       - name: Publicar (un solo .exe, sin necesitar .NET)
         run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
 
+      # Versión ligera: el mismo programa sin .NET dentro (pesa muy poco), para quien tenga instalado
+      # el "Runtime de escritorio de .NET" 8 o posterior. Sin comprimir, que es lo que menos recelo da.
+      - name: Publicar versión ligera (usa el .NET instalado en Windows)
+        run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=false -p:RollForward=Major -o publish-ligero
+
       - name: Copiar a dist
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item publish/TraductorNWN.exe dist/TraductorNWN.exe -Force
-          Get-Item dist/TraductorNWN.exe | Select-Object Name, Length
+          Copy-Item publish-ligero/TraductorNWN.exe dist/TraductorNWN-ligero.exe -Force
+          Get-ChildItem publish, publish-ligero | Select-Object Directory, Name, Length | Format-Table -AutoSize
+          Get-Item dist/*.exe | Select-Object Name, Length
+
+      # Para comprobar que la versión ligera también funciona con .NET 10 (el que conviene instalar:
+      # el soporte de .NET 8 termina en noviembre de 2026).
+      - name: Instalar el runtime de escritorio de .NET 10 (solo para la prueba)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile "$env:RUNNER_TEMP/dotnet-install.ps1"
+          $destino = if ($env:DOTNET_ROOT) { $env:DOTNET_ROOT } else { Join-Path $env:ProgramFiles 'dotnet' }
+          & "$env:RUNNER_TEMP/dotnet-install.ps1" -Runtime windowsdesktop -Channel 10.0 -InstallDir $destino
+          dotnet --list-runtimes
+
+      - name: Probar que arrancan
+        shell: pwsh
+        run: >
+          ./herramientas/probar-arranque.ps1 -Informe dist/analisis-antivirus.txt
+          -Exe "anterior=$env:RUNNER_TEMP/anterior/TraductorNWN.exe","nuevo=dist/TraductorNWN.exe","ligero=dist/TraductorNWN-ligero.exe","ligero-net10=dist/TraductorNWN-ligero.exe"
+          -Obligatorios nuevo,ligero -NetMasNuevo ligero-net10 -Capturas capturas
+
+      - name: Analizar con Microsoft Defender
+        continue-on-error: true
+        shell: pwsh
+        run: >
+          ./herramientas/analizar-defender.ps1 -Informe dist/analisis-antivirus.txt
+          -Exe "anterior=$env:RUNNER_TEMP/anterior/TraductorNWN.exe","nuevo=dist/TraductorNWN.exe","ligero=dist/TraductorNWN-ligero.exe"
 
       - name: Subir como descarga del run
         uses: actions/upload-artifact@v4
         with:
           name: TraductorNWN
-          path: dist/TraductorNWN.exe
+          path: |
+            dist/TraductorNWN.exe
+            dist/TraductorNWN-ligero.exe
+            dist/analisis-antivirus.txt
+            capturas/*.png
 
       - name: Guardar el exe en dist/
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/TraductorNWN.exe
+          git add dist/TraductorNWN.exe dist/TraductorNWN-ligero.exe dist/analisis-antivirus.txt
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
-            git commit -m "Actualizar dist/TraductorNWN.exe [skip ci]"
+            git commit -m "Actualizar dist/ (exe y análisis antivirus) [skip ci]"
             git pull --rebase
             git push
           }
