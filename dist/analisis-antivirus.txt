@@ -1,0 +1,30 @@
+Análisis automático de TraductorNWN.exe
+Fecha (UTC): 2026-10-16 22:24   Commit: 9fc031769be5179cb72f7655ee9eff0932bb2288
+
+== Archivos ==
+anterior        68.5 MB  SHA256 7B993A45D87D720AD2E7B5A3351390F40585821E0CC40A557F8A303EEB5C26E2
+nuevo           65.0 MB  SHA256 0AF0B1D6B701BD9E69C61D48240FEE9C1248B73C2708EB50B677665112A0F9C4
+ligero           0.6 MB  SHA256 CE2D732544C444273C91DE0352DE2D2EDD48BA9EB8DF15E0E1C504ABF8EA4CA7
+ligero-net10     0.6 MB  SHA256 CE2D732544C444273C91DE0352DE2D2EDD48BA9EB8DF15E0E1C504ABF8EA4CA7
+
+== Arranque (cada .exe solo en una carpeta vacía, 12 s abierto) ==
+anterior     ARRANCA. Ventana: «Traductor NWN». .NET: incluido en el .exe. Archivos sacados a la carpeta temporal: 5
+               - D3DCompiler_47_cor3.dll
+               - PenImc_cor3.dll
+               - PresentationNative_cor3.dll
+               - vcruntime140_cor3.dll
+               - wpfgfx_cor3.dll
+nuevo        ARRANCA. Ventana: «Traductor NWN». .NET: incluido en el .exe. Archivos sacados a la carpeta temporal: 0
+ligero       ARRANCA. Ventana: «Traductor NWN». .NET: .NET 8.0.32 instalado en Windows. Archivos sacados a la carpeta temporal: 0
+ligero-net10 ARRANCA. Ventana: «Traductor NWN». .NET: .NET 10.0.13 instalado en Windows. Archivos sacados a la carpeta temporal: 0
+
+== Microsoft Defender ==
+Motor 1.1.26090.9, firmas 1.461.60.0 del 2026-10-16 15:07 (antes de actualizar: 1.461.60.0)
+Protección en la nube: activada. Exclusiones: ninguna
+Control (archivo de prueba EICAR): detectado como Virus:DOS/EICAR_Test_File -> Defender analiza bien aquí.
+anterior     LIMPIO (no detecta nada)
+nuevo        LIMPIO (no detecta nada)
+ligero       LIMPIO (no detecta nada)
+
+Nota: es Microsoft Defender en un Windows de GitHub. Otros antivirus (Avast, AVG, Norton,
+Kaspersky...) pueden opinar distinto, y SmartScreen avisa de todo programa nuevo sin firma.
