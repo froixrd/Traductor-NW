@@ -198,11 +198,18 @@ Los errores inesperados se registran en `%AppData%\TraductorNWN\errores.log`.
   También vale "Más información" → "Ejecutar de todas formas". Firmar el
   programa requiere comprar un certificado y, aun firmado, Windows sigue
   avisando hasta que el programa gana reputación con las descargas.
-- **El antivirus lo marca como sospechoso.** Es un falso positivo habitual con
-  programas nuevos, sin firma y que simulan el teclado (para escribir en el
-  juego). Se ha quitado lo que más suele disparar las alarmas: el .exe ya no saca
-  DLL a la carpeta temporal al arrancar ni lee el estado del teclado de todo el
-  sistema. Si aun así salta:
+- **Aviso de virus o de "puede dañar tu equipo" al descargarlo.** Microsoft
+  Defender, configurado como en un PC de casa (tiempo real, nube, bloqueo a
+  primera vista y simulando la descarga del navegador), da por limpias **todas**
+  las versiones del .exe que ha habido en `dist\`, desde la primera. El aviso
+  viene de la *reputación*: SmartScreen y el navegador desconfían de cualquier
+  .exe sin firma digital que todavía han descargado pocas personas, y cada
+  versión nueva empieza de cero. Por eso la compilación es reproducible: el .exe
+  solo cambia cuando cambia el código. Al bajar con el navegador, elige
+  *Conservar* (Edge: «…» → *Conservar* → *Conservar de todos modos*); al abrirlo,
+  *Más información* → *Ejecutar de todas formas*. Bajándolo con Git (GitHub
+  Desktop, Visual Studio) no sale ningún aviso. Lo único que lo quita para todo
+  el mundo es firmar el programa. Si es otro antivirus el que salta:
   1. Prueba `TraductorNWN-ligero.exe`.
   2. Mira en `dist\analisis-antivirus.txt` qué dice Microsoft Defender.
   3. Envía el .exe a tu antivirus como falso positivo. Microsoft:

@@ -4,7 +4,10 @@
 #
 # Además de compilar:
 #  - prueba que cada .exe arranca solo, sin DLL al lado (si el nuevo falla, no se guarda);
-#  - lo analiza con Microsoft Defender actualizado y deja el resultado en dist/analisis-antivirus.txt.
+#  - lo analiza con Microsoft Defender configurado como en un PC de casa y deja el resultado en
+#    dist/analisis-antivirus.txt.
+# La compilación es reproducible: si el código no cambia, el .exe sale idéntico y no se vuelve a
+# guardar (cada .exe distinto hace que SmartScreen y los antivirus vuelvan a avisar al descargarlo).
 name: Compilar exe
 
 on:
@@ -42,12 +45,12 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Publicar (un solo .exe, sin necesitar .NET)
-        run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+        run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:ContinuousIntegrationBuild=true -o publish
 
       # Versión ligera: el mismo programa sin .NET dentro (pesa muy poco), para quien tenga instalado
       # el "Runtime de escritorio de .NET" 8 o posterior. Sin comprimir, que es lo que menos recelo da.
       - name: Publicar versión ligera (usa el .NET instalado en Windows)
-        run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=false -p:RollForward=Major -o publish-ligero
+        run: dotnet publish Traductor.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=false -p:RollForward=Major -p:ContinuousIntegrationBuild=true -o publish-ligero
 
       - name: Copiar a dist
         shell: pwsh
