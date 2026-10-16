@@ -22,6 +22,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- El icono también va dentro del programa, para que la ventana y la barra de tareas lo usen
+         a buena resolución (el del .exe lo pone ApplicationIcon). -->
+    <EmbeddedResource Include="app.ico" LogicalName="TraductorNWN.app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- DPAPI: guardar la clave de DeepL cifrada para el usuario de Windows actual. -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>

@@ -132,11 +132,7 @@ namespace TraductorNWN
             MinimumSize = new Size(Dpi.S(560), Dpi.S(560));
             BackColor = _theme.App;
 
-            try
-            {
-                Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            }
-            catch { /* si falla, se usa el icono genérico */ }
+            if (LoadAppIcon() is System.Drawing.Icon appIcon) Icon = appIcon;
 
             BuildHeader();
             BuildSettings();
@@ -208,6 +204,26 @@ namespace TraductorNWN
         // ======================================================================
         //  Construcción de la interfaz
         // ======================================================================
+
+        // El icono con todos sus tamaños (16 a 256 px): Windows elige el adecuado para la barra de título,
+        // la barra de tareas y Alt+Tab, también con zoom de pantalla.
+        private static System.Drawing.Icon? LoadAppIcon()
+        {
+            try
+            {
+                using var stream = typeof(MainForm).Assembly.GetManifestResourceStream("TraductorNWN.app.ico");
+                if (stream != null) return new System.Drawing.Icon(stream);
+            }
+            catch { /* se prueba con el del .exe */ }
+            try
+            {
+                return System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            }
+            catch
+            {
+                return null; // icono genérico de Windows
+            }
+        }
 
         private void BuildHeader()
         {

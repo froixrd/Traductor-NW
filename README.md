@@ -182,8 +182,14 @@ Los errores inesperados se registran en `%AppData%\TraductorNWN\errores.log`.
   `enabled = false` o cada mensaje saldrá dos veces. Si no está activado, el
   traductor te avisa al arrancar.
 
-- Windows SmartScreen puede avisar porque el .exe no está firmado:
-  "Más información" → "Ejecutar de todas formas".
+- **Aviso "Windows protegió su PC" (SmartScreen).** Sale con los programas
+  descargados de internet que no tienen firma digital o que todavía son poco
+  conocidos. Para tu propio equipo: clic derecho en `TraductorNWN.exe` →
+  *Propiedades* → marca **Desbloquear** → *Aceptar* (una vez por cada descarga).
+  También vale "Más información" → "Ejecutar de todas formas". Firmar el
+  programa requiere comprar un certificado y, aun firmado, Windows sigue
+  avisando hasta que el programa gana reputación con las descargas.
+- El icono (`app.ico`) se genera con `herramientas/generar_icono.py`.
 - La ventana del juego se busca por el proceso `nwmain.exe` y, si no, por título
   (sin confundirla con la propia ventana del traductor ni con navegadores).
 - Si el juego se ejecuta como administrador, el traductor también tiene que
