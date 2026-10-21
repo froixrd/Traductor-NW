@@ -1,0 +1,14 @@
+Prueba automática de TraductorNWN (versión Tauri)
+Fecha (UTC): 2026-10-21 22:49   Commit: e16e4f3bceddfec0d67f0ea82f0f51160b0829b3
+Tamaño: 9.8 MB   SHA256 FF50D142B0C00D8C8665B82BC5B33E77263B787E250FB393B974BE2BD3F1F850
+Arranque: ARRANCA. Memoria total (con WebView2): 335 MB
+
+== Microsoft Defender (configurado como en un PC de casa) ==
+Motor 1.1.26090.9, firmas 1.461.140.0 del 2026-10-21 14:58 (antes de actualizar: 1.461.140.0)
+Tiempo real: sí. Comportamiento: sí. Descargas: sí. Nube: sí. Bloqueo a primera vista: sí. Envío de muestras: sí. Exclusiones: ninguna
+Control (archivo de prueba EICAR): bloqueado al descargarlo como Virus:DOS/EICAR_Test_File -> Defender analiza bien aquí.
+tauri        LIMPIO (lo deja descargar y no detecta nada)
+
+Nota: es Microsoft Defender en un Windows de GitHub. Otros antivirus (Avast, AVG, Norton,
+Kaspersky...) pueden opinar distinto. Aparte, SmartScreen ("Windows protegió su PC") y el
+navegador avisan de cualquier programa nuevo sin firma digital, aunque esté limpio.
