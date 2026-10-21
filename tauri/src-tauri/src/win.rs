@@ -19,8 +19,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsWindowVisible, MessageBeep, SetForegroundWindow, ShowWindow, GW_OWNER, MB_ICONASTERISK, SW_RESTORE,
+    IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER, MB_ICONASTERISK, SW_RESTORE,
 };
+use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
 
 /// Las ventanas se guardan como número para poder pasarlas entre hilos.
 pub type Hwnd = isize;
