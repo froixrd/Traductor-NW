@@ -46,8 +46,19 @@ jobs:
       - name: Pruebas del núcleo (también lo que solo existe en Windows)
         run: cargo test -p nucleo
 
+      - name: Compilar la interfaz
+        run: npm run build
+
+      # Si falla, cada error sale como anotación del run (se ven en la pestaña Actions sin abrir el registro).
       - name: Compilar el .exe
-        run: npx tauri build --no-bundle
+        shell: pwsh
+        run: |
+          npx tauri build --no-bundle
+          if ($LASTEXITCODE -ne 0) {
+            $errores = cargo build --release -p traductor-nwn --message-format short 2>&1 | Select-String -Pattern '(error|warning)(\[\w+\])?:'
+            $errores | Select-Object -First 40 | ForEach-Object { Write-Output "::error::$($_.Line)" }
+            exit 1
+          }
 
       - name: Copiar a dist
         shell: pwsh
