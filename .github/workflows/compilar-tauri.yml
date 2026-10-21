@@ -76,7 +76,7 @@ jobs:
       - name: Probar que arranca
         shell: pwsh
         working-directory: .
-        run: ./tauri/herramientas/probar-arranque.ps1 -Exe dist/TraductorNWN-tauri.exe -Informe dist/analisis-tauri.txt -Captura dist/captura-tauri.png
+        run: ./tauri/herramientas/probar-arranque.ps1 -Exe dist/TraductorNWN-tauri.exe -Anterior dist/TraductorNWN.exe -Informe dist/analisis-tauri.txt -Captura dist/captura-tauri.png
 
       - name: Analizar con Microsoft Defender
         continue-on-error: true
