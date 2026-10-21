@@ -1,0 +1,10 @@
+[workspace]
+members = ["nucleo", "src-tauri"]
+resolver = "2"
+
+# El .exe lo más pequeño posible: optimizado por tamaño, sin símbolos de depuración.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

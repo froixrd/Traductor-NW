@@ -1,0 +1,93 @@
+# Compila la versión nueva (Tauri: interfaz web + núcleo en Rust) en un Windows de GitHub y guarda
+# el .exe en dist/TraductorNWN-tauri.exe de la rama tauri, así no hace falta instalar nada en tu PC.
+# Antes de guardarlo: pasa las pruebas del núcleo en Windows, comprueba que el .exe arranca y lee un
+# log de prueba, y lo analiza con Microsoft Defender. Se lanza al cambiar algo en tauri/ o a mano.
+name: Compilar exe (Tauri)
+
+on:
+  push:
+    branches: [tauri]
+    paths:
+      - 'tauri/**'
+      - '.github/workflows/compilar-tauri.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compilar-tauri
+  cancel-in-progress: true
+
+jobs:
+  compilar:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri
+
+      - name: Instalar dependencias de la interfaz
+        run: npm ci
+
+      - name: Pruebas del núcleo (también lo que solo existe en Windows)
+        run: cargo test -p nucleo
+
+      - name: Compilar el .exe
+        run: npx tauri build --no-bundle
+
+      - name: Copiar a dist
+        shell: pwsh
+        working-directory: .
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item tauri/target/release/TraductorNWN.exe dist/TraductorNWN-tauri.exe -Force
+          Get-Item dist/TraductorNWN-tauri.exe | Select-Object Name, Length
+
+      - name: Probar que arranca
+        shell: pwsh
+        working-directory: .
+        run: ./tauri/herramientas/probar-arranque.ps1 -Exe dist/TraductorNWN-tauri.exe -Informe dist/analisis-tauri.txt -Captura dist/captura-tauri.png
+
+      - name: Analizar con Microsoft Defender
+        continue-on-error: true
+        shell: pwsh
+        working-directory: .
+        run: ./herramientas/analizar-defender.ps1 -Informe dist/analisis-tauri.txt -Exe "tauri=dist/TraductorNWN-tauri.exe"
+
+      - name: Subir como descarga del run
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraductorNWN-tauri
+          path: |
+            dist/TraductorNWN-tauri.exe
+            dist/analisis-tauri.txt
+            dist/captura-tauri.png
+
+      - name: Guardar el exe en dist/
+        shell: pwsh
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/TraductorNWN-tauri.exe dist/analisis-tauri.txt dist/captura-tauri.png
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Actualizar dist/ (exe Tauri y análisis) [skip ci]"
+            git pull --rebase
+            git push
+          }
+          exit 0
