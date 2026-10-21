@@ -53,10 +53,15 @@ jobs:
       - name: Compilar el .exe
         shell: pwsh
         run: |
-          npx tauri build --no-bundle
-          if ($LASTEXITCODE -ne 0) {
-            $errores = cargo build --release -p traductor-nwn --message-format short 2>&1 | Select-String -Pattern '(error|warning)(\[\w+\])?:'
-            $errores | Select-Object -First 40 | ForEach-Object { Write-Output "::error::$($_.Line)" }
+          $ErrorActionPreference = 'Continue'
+          npx tauri build --no-bundle *>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $env:RUNNER_TEMP/build.log
+          $codigo = $LASTEXITCODE
+          if ($codigo -ne 0) {
+            # Las líneas con errores (o, si no hay, las últimas) como anotaciones del run.
+            $log = Get-Content $env:RUNNER_TEMP/build.log
+            $err = @($log | Select-String -Pattern 'error|failed|panicked' | ForEach-Object { $_.Line })
+            if ($err.Count -eq 0) { $err = $log | Select-Object -Last 15 }
+            $err | Select-Object -First 30 | ForEach-Object { Write-Output ("::error::" + ($_ -replace '%', '%25')) }
             exit 1
           }
 
